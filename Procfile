@@ -1,0 +1,1 @@
+worker: python slipiq_orchestrator.py --schedule
