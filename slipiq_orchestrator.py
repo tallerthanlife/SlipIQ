@@ -74,9 +74,13 @@ def run_pipeline():
         import discord
         from slipiq_discord import SlipIQBot
 
-        intents = discord.Intents.default()
-        bot = SlipIQBot(intents=intents)
-        bot.run(DISCORD_BOT_TOKEN)
+        import asyncio
+intents = discord.Intents.default()
+bot = SlipIQBot(intents=intents)
+try:
+    bot.run(DISCORD_BOT_TOKEN)
+except Exception as e:
+    print(f"Discord bot finished: {e}")
 
         print(f"\n✅ Pipeline complete — {datetime.now().strftime('%H:%M:%S')}")
 
