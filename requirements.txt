@@ -11,3 +11,4 @@ APScheduler
 fuzzywuzzy
 python-Levenshtein
 aiohttp
+schedule
