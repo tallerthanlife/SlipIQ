@@ -1,0 +1,13 @@
+anthropic
+python-dotenv
+requests
+pandas
+numpy
+pybaseball
+MLB-StatsAPI
+supabase
+discord.py
+APScheduler
+fuzzywuzzy
+python-Levenshtein
+aiohttp
