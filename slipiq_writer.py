@@ -64,7 +64,8 @@ def generate_pick_writeup(pick):
     pick = dict from slipiq_lines.run_full_analysis()
     """
     direction = "OVER" if "OVER" in pick["recommendation"] else "UNDER"
-    grade = pick["recommendation"].split("Grade: ")[-1].split(" |")[0].strip()
+    grade = pick.get("grade") or pick["recommendation"].split("Grade: ")[-1].split(" |")[0].strip()
+    conf = pick.get("display_confidence", pick["confidence"])
 
     prompt = f"""
 Pitcher: {pick['pitcher']}
@@ -73,8 +74,9 @@ Projection: {pick['projection']} K
 Season Average: {pick.get('season_avg', 'N/A')} K
 Last 3 Starts: {pick.get('last_3_avg', 'N/A')} K
 Trend: {pick['trend']}
-Confidence: {pick['confidence']}%
+Confidence: {conf}%
 Grade: {grade}
+Track record: {pick.get('hit_rate_label', 'N/A')}
 
 Write a sharp 2-sentence analysis explaining why this is the play today.
 Focus on the data edge. Be direct and confident.
@@ -105,37 +107,11 @@ Sound like an elite sports analyst. Be concise and confident.
 """
     return call_groq(prompt, max_tokens=200)
 
-# ─── Confidence Score ─────────────────────────────────────────
-
 def generate_confidence_score(pick):
-    """
-    Use Groq to give an agentic second opinion on confidence
-    Returns adjusted confidence score (0-100) as integer
-    """
-    direction = "OVER" if "OVER" in pick["recommendation"] else "UNDER"
+    """Deprecated: use slipiq_confidence_agent.agentic_confidence."""
+    from slipiq_confidence_agent import agentic_confidence
+    return agentic_confidence(pick)
 
-    prompt = f"""
-You are a sharp sports betting analyst reviewing a model's pick.
-
-Pitcher: {pick['pitcher']}
-Pick: {direction} {pick['line']} K
-Model Projection: {pick['projection']} K  
-Season Avg: {pick.get('season_avg', 'N/A')} K
-Last 3 Starts Avg: {pick.get('last_3_avg', 'N/A')} K
-Trend: {pick['trend']}
-Model Confidence: {pick['confidence']}%
-
-Based on this data, respond with ONLY a single integer between 0 and 100 
-representing your adjusted confidence in this pick. Nothing else. Just the number.
-"""
-    result = call_groq(prompt, max_tokens=10)
-    
-    # Extract integer from response
-    try:
-        score = int(''.join(filter(str.isdigit, result)))
-        return min(99, max(1, score))
-    except:
-        return pick["confidence"]  # fall back to model score
 
 # ─── Test ─────────────────────────────────────────────────────
 

@@ -1,0 +1,225 @@
+"""
+SlipIQ Slip Review — 6-step pre-bet checklist
+Validates each pick before it ships to Discord / results.
+"""
+
+import os
+
+# Step thresholds (override via .env)
+MIN_EDGE = float(os.getenv("SLIP_MIN_EDGE", "0.75"))
+MIN_MODEL_CONF = float(os.getenv("SLIP_MIN_MODEL_CONF", "60"))
+MIN_DISPLAY_CONF = float(os.getenv("SLIP_MIN_DISPLAY_CONF", "58"))
+MIN_TRACK_RECORD_PCT = float(os.getenv("SLIP_MIN_TRACK_RECORD", "50"))
+
+
+STEPS = [
+    "edge_check",
+    "model_confidence",
+    "agentic_confidence",
+    "track_record",
+    "trend_alignment",
+    "bankroll_gate",
+]
+
+
+def _direction(pick):
+    return "OVER" if "OVER" in pick.get("recommendation", "") else "UNDER"
+
+
+def _edge(pick):
+    return abs(pick["projection"] - pick["line"])
+
+
+def step_edge_check(pick):
+    edge = _edge(pick)
+    passed = edge >= MIN_EDGE
+    return {
+        "name": "1. Edge Check",
+        "passed": passed,
+        "detail": f"Projection {pick['projection']} vs line {pick['line']} (edge {edge:.1f} K)",
+    }
+
+
+def step_model_confidence(pick):
+    conf = pick.get("model_confidence", pick.get("confidence", 0))
+    passed = conf >= MIN_MODEL_CONF
+    return {
+        "name": "2. Model Confidence",
+        "passed": passed,
+        "detail": f"Model confidence {conf}% (min {MIN_MODEL_CONF}%)",
+    }
+
+
+def step_agentic_confidence(pick):
+    conf = pick.get("display_confidence", pick.get("confidence", 0))
+    passed = conf >= MIN_DISPLAY_CONF
+    return {
+        "name": "3. Agentic Confidence",
+        "passed": passed,
+        "detail": f"Display confidence {conf}% (min {MIN_DISPLAY_CONF}%)",
+    }
+
+
+def step_track_record(pick):
+    label = pick.get("hit_rate_label", "")
+    if "building" in label.lower():
+        return {
+            "name": "4. Track Record",
+            "passed": True,
+            "detail": "Track record still building — pass by default",
+        }
+
+    rate = None
+    if "%" in label:
+        try:
+            rate = float(label.split("%")[0].split()[-1])
+        except (ValueError, IndexError):
+            rate = None
+
+    if rate is None:
+        passed = True
+        detail = label or "No history"
+    else:
+        passed = rate >= MIN_TRACK_RECORD_PCT
+        detail = f"{label} (min {MIN_TRACK_RECORD_PCT}%)"
+
+    return {"name": "4. Track Record", "passed": passed, "detail": detail}
+
+
+def step_trend_alignment(pick):
+    direction = _direction(pick)
+    trend = pick.get("trend", "NEUTRAL")
+    if trend == "NEUTRAL":
+        passed = True
+        detail = "Neutral trend — no conflict"
+    elif trend == "HOT":
+        passed = direction == "OVER"
+        detail = f"HOT trend vs {direction} pick"
+    else:  # COLD
+        passed = direction == "UNDER"
+        detail = f"COLD trend vs {direction} pick"
+
+    return {"name": "5. Trend Alignment", "passed": passed, "detail": detail}
+
+
+def step_bankroll_gate(pick):
+    grade = pick.get("grade", "C")
+    units = {"A": 1.5, "B": 1.0, "C": 0.5}.get(grade, 0.5)
+    passed = units >= 0.5
+    return {
+        "name": "6. Bankroll Gate",
+        "passed": passed,
+        "detail": f"Suggested size: {units}u (Grade {grade})",
+        "units": units,
+    }
+
+
+def review_pick(pick):
+    """
+    Run 6-step checklist on one pick.
+    Returns dict with passed, score, steps, units.
+    """
+    steps = [
+        step_edge_check(pick),
+        step_model_confidence(pick),
+        step_agentic_confidence(pick),
+        step_track_record(pick),
+        step_trend_alignment(pick),
+        step_bankroll_gate(pick),
+    ]
+
+    passed_count = sum(1 for s in steps if s["passed"])
+    score = round(passed_count / len(steps) * 100)
+    all_passed = passed_count == len(steps)
+    units = next((s.get("units") for s in steps if s["name"] == "6. Bankroll Gate"), 0.5)
+
+    return {
+        "passed": all_passed,
+        "score": score,
+        "steps_passed": passed_count,
+        "steps_total": len(steps),
+        "units": units,
+        "steps": steps,
+    }
+
+
+def review_picks(picks, require_all_passed=False):
+    """
+    Review all picks; attach slip_review to each.
+    Returns (picks_with_review, approved_picks).
+    """
+    if not picks:
+        return [], []
+
+    reviewed = []
+    for pick in picks:
+        pick = dict(pick)
+        pick["slip_review"] = review_pick(pick)
+        reviewed.append(pick)
+
+    approved = [p for p in reviewed if p["slip_review"]["passed"]]
+
+    if require_all_passed and not approved:
+        # Fallback: top 3 by checklist score so pipeline never goes empty
+        reviewed.sort(key=lambda p: p["slip_review"]["score"], reverse=True)
+        approved = reviewed[: min(3, len(reviewed))]
+
+    return reviewed, approved
+
+
+def format_review_text(review):
+    """Plain-text checklist for logs."""
+    lines = [f"Score: {review['score']}% ({review['steps_passed']}/{review['steps_total']})"]
+    for step in review["steps"]:
+        mark = "PASS" if step["passed"] else "FAIL"
+        lines.append(f"  [{mark}] {step['name']}: {step['detail']}")
+    return "\n".join(lines)
+
+
+def build_slip_review_embed(pick):
+    """Discord embed for #slip-builder."""
+    import discord
+
+    review = pick.get("slip_review") or review_pick(pick)
+    direction = _direction(pick)
+    grade = pick.get("grade", "?")
+    color = 0x00FF88 if review["passed"] else 0xFF6644
+
+    embed = discord.Embed(
+        title=f"Slip Review — {pick['pitcher']} {direction} {pick['line']} K",
+        description=f"**{'APPROVED' if review['passed'] else 'CAUTION'}** | Checklist {review['score']}% | {review['units']}u suggested",
+        color=color,
+    )
+
+    for step in review["steps"]:
+        icon = "✅" if step["passed"] else "❌"
+        embed.add_field(
+            name=f"{icon} {step['name']}",
+            value=step["detail"][:1024],
+            inline=False,
+        )
+
+    conf = pick.get("display_confidence", pick["confidence"])
+    embed.add_field(name="Grade", value=grade, inline=True)
+    embed.add_field(name="Confidence", value=f"{conf}%", inline=True)
+    embed.add_field(name="Projection", value=f"{pick['projection']} K", inline=True)
+    embed.set_footer(text="SlipIQ • 6-Step Slip Review")
+    return embed
+
+
+if __name__ == "__main__":
+    sample = {
+        "pitcher": "Test Ace",
+        "line": 5.5,
+        "projection": 7.0,
+        "confidence": 72,
+        "model_confidence": 70,
+        "display_confidence": 74,
+        "grade": "B",
+        "trend": "HOT",
+        "recommendation": "OVER 5.5 | Grade: B | Confidence: 74%",
+        "hit_rate_label": "Track record building",
+    }
+    r = review_pick(sample)
+    print(format_review_text(r))
+    print("Passed:", r["passed"])

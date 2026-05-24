@@ -130,13 +130,11 @@ def run_full_analysis():
         if projection and projection["confidence"] >= 60:
             rec = get_recommendation(projection, line)
             if "PASS" not in rec:
-                grade = rec.split("Grade: ")[-1].split(" |")[0].strip()
                 picks.append({
                     "pitcher": pitcher,
                     "line": line,
                     "projection": projection["projection"],
                     "recommendation": rec,
-                    "grade": grade,
                     "confidence": projection["confidence"],
                     "trend": projection["trend"],
                     "season_avg": projection["season_avg"],
@@ -147,8 +145,11 @@ def run_full_analysis():
                     "away_team": prop.get("away_team"),
                 })
 
-    # Sort by confidence; cap Discord/API load if configured
-    picks = sorted(picks, key=lambda x: x["confidence"], reverse=True)
+    # Agentic confidence + hit-rate-aware grades
+    print("\nRunning confidence agent on picks...")
+    from slipiq_confidence_agent import enrich_picks
+    picks = enrich_picks(picks)
+
     top_n = int(os.getenv("SLIPIQ_TOP_PICKS", "0"))
     if top_n > 0:
         picks = picks[:top_n]
@@ -166,6 +167,8 @@ def run_full_analysis():
             print(f"  Line:       {pick['line']} K")
             print(f"  Projection: {pick['projection']} K")
             print(f"  Pick:       {pick['recommendation']}")
+            print(f"  Model conf: {pick.get('model_confidence')}% → Display: {pick.get('display_confidence')}%")
+            print(f"  Track rec:  {pick.get('hit_rate_label', '—')}")
             print(f"  Trend:      {pick['trend']}")
             print(f"  Source:     {pick['bookmaker']}")
 

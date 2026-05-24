@@ -1,7 +1,6 @@
 """
-SlipIQ Discord Bot — Personal Use
-Posts MLB pitcher strikeout picks with AI writeups to your private Discord
-Powered by Groq (free) — no Anthropic credits needed
+SlipIQ Discord Bot
+Posts MLB pitcher props, daily best pick, and Sharp Review debriefs.
 """
 
 import discord
@@ -10,6 +9,7 @@ import asyncio
 from dotenv import load_dotenv
 from slipiq_lines import run_full_analysis
 from slipiq_writer import generate_pick_writeup, generate_daily_brief
+from slipiq_curate import select_daily_best, daily_best_summary
 
 load_dotenv()
 
@@ -25,30 +25,36 @@ def _env_int(name, default=0):
 
 
 MLB_CHANNEL_ID = _env_int("CHANNEL_MLB_PITCHER_PROPS")
+DAILY_BEST_CHANNEL_ID = _env_int("CHANNEL_DAILY_BEST_PICK")
+SHARP_REVIEW_CHANNEL_ID = _env_int("CHANNEL_SHARP_REVIEW")
+SLIP_BUILDER_CHANNEL_ID = _env_int("CHANNEL_SLIP_BUILDER")
+RESULTS_PUBLIC_CHANNEL_ID = _env_int("CHANNEL_RESULTS_PUBLIC")
 
-# ─── Helpers ──────────────────────────────────────────────────
 
 def grade_color(grade):
     return {"A": 0x00ff88, "B": 0x3399ff, "C": 0xffaa00}.get(grade, 0x888888)
 
+
 def trend_emoji(trend):
     return {"HOT": "🔥", "COLD": "❄️", "NEUTRAL": "➡️"}.get(trend, "➡️")
+
 
 def direction_emoji(rec):
     return "⬆️" if "OVER" in rec else "⬇️"
 
-# ─── Formatter ────────────────────────────────────────────────
 
-def build_pick_embed(pick, rank, writeup=None):
+def build_pick_embed(pick, rank, writeup=None, daily_best=False):
     direction = "OVER" if "OVER" in pick["recommendation"] else "UNDER"
     grade = pick.get("grade") or pick["recommendation"].split("Grade: ")[-1].split(" |")[0].strip()
+    conf = pick.get("display_confidence", pick["confidence"])
+    hit_rate = pick.get("hit_rate_label", "—")
 
+    prefix = "⭐ DAILY BEST — " if daily_best else f"#{rank} "
     embed = discord.Embed(
-        title=f"{direction_emoji(pick['recommendation'])} #{rank} {pick['pitcher']} — {direction} {pick['line']} K",
-        color=grade_color(grade)
+        title=f"{direction_emoji(pick['recommendation'])} {prefix}{pick['pitcher']} — {direction} {pick['line']} K",
+        color=grade_color(grade),
     )
 
-    # AI writeup as description
     if writeup and "unavailable" not in writeup.lower():
         embed.description = f"*{writeup}*"
 
@@ -57,39 +63,65 @@ def build_pick_embed(pick, rank, writeup=None):
     embed.add_field(name="📉 Last 3", value=f"{pick.get('last_3_avg', 'N/A')} K", inline=True)
     embed.add_field(name="📈 Trend", value=f"{trend_emoji(pick['trend'])} {pick['trend']}", inline=True)
     embed.add_field(name="🏆 Grade", value=f"**{grade}**", inline=True)
-    embed.add_field(name="💯 Confidence", value=f"**{pick['confidence']}%**", inline=True)
+    embed.add_field(name="💯 Confidence", value=f"**{conf}%**", inline=True)
+    embed.add_field(name="📈 Track Record", value=hit_rate, inline=False)
     embed.add_field(name="📡 Source", value=pick["bookmaker"], inline=True)
+
+    review = pick.get("slip_review")
+    if review:
+        status = "Approved" if review.get("passed") else "Caution"
+        embed.add_field(
+            name="Slip Review",
+            value=f"{status} — {review.get('score', 0)}% | {review.get('units', 1)}u",
+            inline=True,
+        )
+
     embed.set_footer(text="SlipIQ • MLB Strikeout Model • Powered by Groq")
     return embed
 
+
 def build_header_embed(picks, brief=None):
+    books = {p["bookmaker"] for p in picks}
+    source = ", ".join(sorted(books)) if books else "live books"
     embed = discord.Embed(
         title="⚾ SlipIQ — MLB Pitcher Props",
-        description=brief or f"**{len(picks)} picks** generated from live FanDuel lines",
-        color=0x1a1a2e
+        description=brief or f"**{len(picks)} picks** from {source}",
+        color=0x1A1A2E,
     )
-    embed.set_footer(text="SlipIQ • Personal Analytics")
+    embed.set_footer(text="SlipIQ • VIP Pitcher Props")
     return embed
 
-# ─── Bot ──────────────────────────────────────────────────────
 
 class SlipIQBot(discord.Client):
 
-    def __init__(self, *args, picks=None, brief=None, **kwargs):
+    def __init__(
+        self,
+        *args,
+        picks=None,
+        brief=None,
+        daily_best=None,
+        sharp_review_stats=None,
+        settled_today=None,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self._picks = picks
         self._brief = brief
+        self._daily_best = daily_best
+        self._sharp_review_stats = sharp_review_stats
+        self._settled_today = settled_today or []
 
     async def on_ready(self):
         print(f"✅ SlipIQ Bot online as {self.user}")
 
-        if not MLB_CHANNEL_ID:
-            print("❌ CHANNEL_MLB_PITCHER_PROPS not set in .env")
+        if not MLB_CHANNEL_ID and not DAILY_BEST_CHANNEL_ID:
+            print("❌ Set CHANNEL_MLB_PITCHER_PROPS and/or CHANNEL_DAILY_BEST_PICK in .env")
             await self.close()
             return
 
         picks = self._picks
         brief = self._brief
+        daily_best = self._daily_best
 
         if picks is None:
             print("🔄 Running analysis...")
@@ -104,28 +136,78 @@ class SlipIQBot(discord.Client):
             print("✍️ Generating daily brief...")
             brief = generate_daily_brief(picks)
 
+        if daily_best is None:
+            daily_best = select_daily_best(picks)
+
         try:
-            channel = await self.fetch_channel(MLB_CHANNEL_ID)
+            # ── Daily best (free tier) ────────────────────────
+            if DAILY_BEST_CHANNEL_ID and daily_best:
+                ch = await self.fetch_channel(DAILY_BEST_CHANNEL_ID)
+                print(f"📌 Daily best: {daily_best_summary(daily_best)}")
+                writeup = generate_pick_writeup(daily_best)
+                await ch.send(embed=build_pick_embed(daily_best, 1, writeup, daily_best=True))
+                await asyncio.sleep(1)
 
-            # Post header with brief
-            await channel.send(embed=build_header_embed(picks, brief))
-            await asyncio.sleep(1)
+            # ── Full slate (VIP) ──────────────────────────────
+            if MLB_CHANNEL_ID:
+                channel = await self.fetch_channel(MLB_CHANNEL_ID)
+                await channel.send(embed=build_header_embed(picks, brief))
+                await asyncio.sleep(1)
 
-            # Post each pick with writeup
-            for i, pick in enumerate(picks, 1):
-                print(f"✍️ Writing up pick {i}/{len(picks)}...")
-                writeup = generate_pick_writeup(pick)
-                await channel.send(embed=build_pick_embed(pick, i, writeup))
-                await asyncio.sleep(1.5)
+                for i, pick in enumerate(picks, 1):
+                    print(f"✍️ Writing up pick {i}/{len(picks)}...")
+                    writeup = generate_pick_writeup(pick)
+                    await channel.send(embed=build_pick_embed(pick, i, writeup))
+                    await asyncio.sleep(1.5)
 
-            print(f"✅ Posted {len(picks)} picks to Discord")
+                print(f"✅ Posted {len(picks)} picks to MLB channel")
+
+            # ── Slip builder (6-step checklist) ───────────────
+            if SLIP_BUILDER_CHANNEL_ID and daily_best and daily_best.get("slip_review"):
+                from slipiq_slip_review import build_slip_review_embed
+
+                ch = await self.fetch_channel(SLIP_BUILDER_CHANNEL_ID)
+                await ch.send(embed=build_slip_review_embed(daily_best))
+                print("Posted slip review to #slip-builder")
+
+            # ── Public results (settled today) ──────────────
+            if RESULTS_PUBLIC_CHANNEL_ID and self._settled_today:
+                ch = await self.fetch_channel(RESULTS_PUBLIC_CHANNEL_ID)
+                for e in self._settled_today[:8]:
+                    color = 0x00FF88 if e.get("result") == "WIN" else 0xFF4444
+                    embed = discord.Embed(
+                        title="SlipIQ Result",
+                        description=(
+                            f"**{e['pitcher']}** — {e['direction']} {e['line']} K\n"
+                            f"Final: {e.get('actual_strikeouts', '?')} K -> **{e['result']}**"
+                        ),
+                        color=color,
+                    )
+                    await ch.send(embed=embed)
+                    await asyncio.sleep(0.5)
+                print(f"Posted {len(self._settled_today)} results to #results-public")
+
+            # ── Sharp Review debrief ──────────────────────────
+            if SHARP_REVIEW_CHANNEL_ID and self._sharp_review_stats:
+                from slipiq_sharp_review_agent import build_sharp_review_embed
+
+                ch = await self.fetch_channel(SHARP_REVIEW_CHANNEL_ID)
+                embed = build_sharp_review_embed(self._sharp_review_stats)
+                if self._settled_today:
+                    summary = "\n".join(
+                        f"- {e['pitcher']}: {e['direction']} {e['line']} -> "
+                        f"{e.get('actual_strikeouts', '?')} K **{e['result']}**"
+                        for e in self._settled_today[:10]
+                    )
+                    embed.add_field(name="Just settled", value=summary, inline=False)
+                await ch.send(embed=embed)
+                print("✅ Posted Sharp Review debrief")
 
         except Exception as e:
             print(f"❌ Discord error: {e}")
 
         await self.close()
 
-# ─── Test Mode (no Discord needed) ───────────────────────────
 
 def test_output():
     """Test full output without posting to Discord"""
@@ -137,29 +219,29 @@ def test_output():
         return
 
     brief = generate_daily_brief(picks)
+    best = select_daily_best(picks)
     print(f"Daily Brief:\n{brief}\n")
+    print(f"Daily Best: {daily_best_summary(best)}\n")
 
     for i, pick in enumerate(picks, 1):
         writeup = generate_pick_writeup(pick)
         direction = "OVER" if "OVER" in pick["recommendation"] else "UNDER"
-        grade = pick.get("grade") or pick["recommendation"].split("Grade: ")[-1].split(" |")[0].strip()
+        grade = pick.get("grade", "?")
+        conf = pick.get("display_confidence", pick["confidence"])
         print(f"#{i} {pick['pitcher']} — {direction} {pick['line']} K")
-        print(f"Projection: {pick['projection']} K | Grade: {grade} | Confidence: {pick['confidence']}%")
-        print(f"Analysis: {writeup}")
-        print()
+        print(f"  Grade: {grade} | Confidence: {conf}% | {pick.get('hit_rate_label')}")
+        print(f"  Analysis: {writeup}\n")
 
-# ─── Runner ───────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import sys
 
     if "--test" in sys.argv:
         test_output()
+    elif not DISCORD_BOT_TOKEN:
+        print("❌ DISCORD_BOT_TOKEN not set in .env")
+        print("Run with --test flag to test without Discord")
     else:
-        if not DISCORD_BOT_TOKEN:
-            print("❌ DISCORD_BOT_TOKEN not set in .env")
-            print("Run with --test flag to test without Discord")
-        else:
-            intents = discord.Intents.default()
-            bot = SlipIQBot(intents=intents)
-            bot.run(DISCORD_BOT_TOKEN)
+        intents = discord.Intents.default()
+        bot = SlipIQBot(intents=intents)
+        bot.run(DISCORD_BOT_TOKEN)
