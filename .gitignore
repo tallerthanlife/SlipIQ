@@ -1,4 +1,5 @@
 .env
+slipiq_results.json
 venv/
 __pycache__/
 *.pyc

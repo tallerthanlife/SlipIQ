@@ -12,16 +12,16 @@ Run modes:
 """
 
 import os
-import time
-import schedule
 import discord
-import asyncio
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
+from apscheduler.schedulers.blocking import BlockingScheduler
 
 load_dotenv()
 
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+ET = ZoneInfo("America/New_York")
 
 
 # ─── Pipeline ─────────────────────────────────────────────────
@@ -35,7 +35,7 @@ def run_pipeline():
     4. Post ranked picks to Discord
     """
     print(f"\n{'='*52}")
-    print(f"SlipIQ Pipeline — {datetime.now().strftime('%Y-%m-%d %H:%M:%S ET')}")
+    print(f"SlipIQ Pipeline — {datetime.now(ET).strftime('%Y-%m-%d %H:%M:%S %Z')}")
     print(f"{'='*52}")
 
     try:
@@ -67,24 +67,28 @@ def run_pipeline():
         brief = generate_daily_brief(picks)
         print(f"      ✅ Brief generated")
 
-        # ── Step 4: Post to Discord ───────────────────────────
-        print("\n[4/4] Posting picks to Discord...")
+        # ── Step 4: Log picks + post to Discord ───────────────
+        print("\n[4/4] Logging picks and posting to Discord...")
+        from slipiq_results import log_pick
+
+        for pick in picks:
+            log_pick(pick)
 
         if not DISCORD_BOT_TOKEN:
-            print("      ❌ DISCORD_BOT_TOKEN not set in .env")
+            print("      ❌ DISCORD_BOT_TOKEN not set in .env — picks logged only")
             return
 
         from slipiq_discord import SlipIQBot
 
         intents = discord.Intents.default()
-        bot = SlipIQBot(intents=intents)
+        bot = SlipIQBot(intents=intents, picks=picks, brief=brief)
 
         try:
             bot.run(DISCORD_BOT_TOKEN)
         except Exception as e:
             print(f"      Discord session ended: {e}")
 
-        print(f"\n✅ Pipeline complete — {datetime.now().strftime('%H:%M:%S')}")
+        print(f"\n✅ Pipeline complete — {datetime.now(ET).strftime('%H:%M:%S %Z')}")
 
     except Exception as e:
         print(f"\n❌ Pipeline error: {e}")
@@ -101,29 +105,25 @@ def start_scheduler():
     12:00 PM ET = 9:00 AM AZ  — Morning run
     4:00 PM ET  = 1:00 PM AZ  — Pre-game run
     """
+    now_et = datetime.now(ET)
     print("\n" + "="*52)
     print("SlipIQ Orchestrator — Scheduled Mode")
     print("="*52)
-    print(f"Started:    {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Started:    {now_et.strftime('%Y-%m-%d %H:%M:%S %Z')}")
     print("Run 1:      12:00 PM ET (9:00 AM AZ) — Morning")
     print("Run 2:       4:00 PM ET (1:00 PM AZ) — Pre-game")
     print("Press Ctrl+C to stop")
     print("="*52)
 
-    # Schedule both runs
-    schedule.every().day.at("12:00").do(run_pipeline)
-    schedule.every().day.at("16:00").do(run_pipeline)
+    scheduler = BlockingScheduler(timezone=ET)
+    scheduler.add_job(run_pipeline, "cron", hour=12, minute=0, id="morning_run")
+    scheduler.add_job(run_pipeline, "cron", hour=16, minute=0, id="pregame_run")
 
-    # Run immediately if already past 12pm ET
-    now = datetime.now()
-    if now.hour >= 12:
+    if now_et.hour >= 12:
         print("\nPast 12pm ET — running pipeline now...")
         run_pipeline()
 
-    # Keep alive — check every 60 seconds
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
+    scheduler.start()
 
 
 # ─── Entry Point ──────────────────────────────────────────────

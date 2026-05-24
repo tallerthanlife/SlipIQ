@@ -13,6 +13,7 @@ load_dotenv()
 
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 BASE_URL = "https://api.the-odds-api.com/v4"
+MAX_EVENTS = int(os.getenv("ODDS_MAX_EVENTS", "15"))
 
 # ─── Fetch Props ──────────────────────────────────────────────
 
@@ -45,7 +46,7 @@ def get_mlb_pitcher_props():
         props = []
 
         # Step 2 - Get pitcher strikeout props for each game
-        for event in events[:5]:  # limit to first 5 games to save API calls
+        for event in events[:MAX_EVENTS]:
             event_id = event["id"]
             home = event["home_team"]
             away = event["away_team"]
@@ -124,23 +125,33 @@ def run_full_analysis():
         pitcher = prop["pitcher"]
         line = prop["line"]
 
-        projection = run_pitcher_model(pitcher, line=line)
+        projection = run_pitcher_model(pitcher, line=line, verbose=False)
 
         if projection and projection["confidence"] >= 60:
             rec = get_recommendation(projection, line)
             if "PASS" not in rec:
+                grade = rec.split("Grade: ")[-1].split(" |")[0].strip()
                 picks.append({
                     "pitcher": pitcher,
                     "line": line,
                     "projection": projection["projection"],
                     "recommendation": rec,
+                    "grade": grade,
                     "confidence": projection["confidence"],
                     "trend": projection["trend"],
+                    "season_avg": projection["season_avg"],
+                    "last_3_avg": projection["last_3_avg"],
+                    "last_5_avg": projection["last_5_avg"],
                     "bookmaker": prop["bookmaker"],
+                    "home_team": prop.get("home_team"),
+                    "away_team": prop.get("away_team"),
                 })
 
-    # Sort by confidence
+    # Sort by confidence; cap Discord/API load if configured
     picks = sorted(picks, key=lambda x: x["confidence"], reverse=True)
+    top_n = int(os.getenv("SLIPIQ_TOP_PICKS", "0"))
+    if top_n > 0:
+        picks = picks[:top_n]
 
     # Print picks
     print("\n" + "="*50)

@@ -10,35 +10,58 @@ from slipiq_mlb_data import get_todays_games, get_pitcher_id, get_pitcher_game_l
 
 # ─── Parse Game Log ───────────────────────────────────────────
 
-def parse_game_log(game_log_data):
-    """Extract strikeout data from MLB Stats API game log"""
+def _parse_innings_pitched(value):
+    """MLB IP strings: 6.0 = 6.0, 6.1 = 6⅓, 6.2 = 6⅔."""
+    if value is None:
+        return 0.0
+    text = str(value).strip()
+    if not text:
+        return 0.0
+    if "." not in text:
+        return float(text)
+    whole, outs = text.split(".", 1)
+    return float(whole) + (float(outs[0]) / 3.0 if outs else 0.0)
+
+
+def parse_game_log(splits):
+    """Build a game log DataFrame from MLB gameLog splits (newest first)."""
     try:
-        splits = game_log_data.get("stats", [])
+        if isinstance(splits, dict):
+            # Legacy statsapi.player_stat_data payload
+            legacy = splits.get("stats", [])
+            if legacy and isinstance(legacy[0].get("stats"), dict):
+                return pd.DataFrame()
+            splits = legacy
+
         if not splits:
             return pd.DataFrame()
 
         rows = []
         for split in splits:
-            stat = split.get("stats", {})
+            stat = split.get("stat") or split.get("stats") or {}
             if not stat:
                 continue
 
-            # Calculate Ks from strikeoutsPer9Inn and inningsPitched
-            innings = float(stat.get("inningsPitched", 0))
-            k_per_9 = float(stat.get("strikeoutsPer9Inn", 0) or 0)
-            strikeouts = round((k_per_9 / 9) * innings, 0) if innings > 0 else 0
+            strikeouts = int(stat.get("strikeOuts", stat.get("strikeouts", 0)) or 0)
+            opponent = split.get("opponent", {})
+            opponent_name = opponent.get("name", "") if isinstance(opponent, dict) else ""
 
             rows.append({
-                "date": "",
-                "opponent": "",
-                "strikeouts": int(strikeouts),
-                "innings": innings,
-                "hits": int(stat.get("hits", 0)),
+                "date": split.get("date", ""),
+                "opponent": opponent_name,
+                "strikeouts": strikeouts,
+                "innings": _parse_innings_pitched(stat.get("inningsPitched")),
+                "hits": int(stat.get("hits", 0) or 0),
                 "walks": int(stat.get("baseOnBalls", 0) or 0),
-                "home_away": True,
+                "home_away": bool(split.get("isHome", True)),
             })
 
         df = pd.DataFrame(rows)
+        if df.empty:
+            return df
+
+        if "date" in df.columns:
+            df = df.sort_values("date", ascending=False).reset_index(drop=True)
         return df
 
     except Exception as e:
@@ -133,36 +156,38 @@ def get_recommendation(projection, line):
 
 # ─── Main Runner ──────────────────────────────────────────────
 
-def run_pitcher_model(pitcher_name, line=None):
+def run_pitcher_model(pitcher_name, line=None, verbose=True):
     """
-    Full pipeline for one pitcher
+    Full pipeline for one pitcher.
+    Set verbose=False when called from the daily lines batch job.
     """
-    print(f"\n{'='*50}")
-    print(f"SlipIQ Strikeout Model: {pitcher_name}")
-    print(f"{'='*50}")
+    if verbose:
+        print(f"\n{'='*50}")
+        print(f"SlipIQ Strikeout Model: {pitcher_name}")
+        print(f"{'='*50}")
 
-    # Get player ID
     pitcher_id, full_name = get_pitcher_id(pitcher_name)
     if not pitcher_id:
-        print(f"Player not found: {pitcher_name}")
+        if verbose:
+            print(f"Player not found: {pitcher_name}")
         return None
 
-    # Get game log
-    raw_log = get_pitcher_game_log(pitcher_id)
-    df = parse_game_log(raw_log)
+    splits = get_pitcher_game_log(pitcher_id)
+    df = parse_game_log(splits)
 
     if df.empty:
-        print("No game log data available")
+        if verbose:
+            print("No game log data available")
         return None
 
-    print(f"Games analyzed: {len(df)}")
-    print(f"\nRecent starts:")
-    print(df[["date", "opponent", "strikeouts", "innings"]].head(5).to_string(index=False))
+    if verbose:
+        print(f"Games analyzed: {len(df)}")
+        print(f"\nRecent starts:")
+        print(df[["date", "opponent", "strikeouts", "innings"]].head(5).to_string(index=False))
 
-    # Calculate projection
     projection = calculate_projection(df, full_name)
 
-    if projection:
+    if projection and verbose:
         print(f"\n--- Projection ---")
         print(f"Season avg:    {projection['season_avg']} K")
         print(f"Last 5 starts: {projection['last_5_avg']} K")

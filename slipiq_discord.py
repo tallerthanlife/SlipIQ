@@ -14,7 +14,17 @@ from slipiq_writer import generate_pick_writeup, generate_daily_brief
 load_dotenv()
 
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-MLB_CHANNEL_ID = int(os.getenv("CHANNEL_MLB_PITCHER_PROPS", 0))
+
+
+def _env_int(name, default=0):
+    raw = os.getenv(name, "")
+    try:
+        return int(raw) if raw else default
+    except ValueError:
+        return default
+
+
+MLB_CHANNEL_ID = _env_int("CHANNEL_MLB_PITCHER_PROPS")
 
 # ─── Helpers ──────────────────────────────────────────────────
 
@@ -31,7 +41,7 @@ def direction_emoji(rec):
 
 def build_pick_embed(pick, rank, writeup=None):
     direction = "OVER" if "OVER" in pick["recommendation"] else "UNDER"
-    grade = pick["recommendation"].split("Grade: ")[-1].split(" |")[0].strip()
+    grade = pick.get("grade") or pick["recommendation"].split("Grade: ")[-1].split(" |")[0].strip()
 
     embed = discord.Embed(
         title=f"{direction_emoji(pick['recommendation'])} #{rank} {pick['pitcher']} — {direction} {pick['line']} K",
@@ -65,6 +75,11 @@ def build_header_embed(picks, brief=None):
 
 class SlipIQBot(discord.Client):
 
+    def __init__(self, *args, picks=None, brief=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._picks = picks
+        self._brief = brief
+
     async def on_ready(self):
         print(f"✅ SlipIQ Bot online as {self.user}")
 
@@ -73,17 +88,21 @@ class SlipIQBot(discord.Client):
             await self.close()
             return
 
-        print("🔄 Running analysis...")
-        picks = run_full_analysis()
+        picks = self._picks
+        brief = self._brief
+
+        if picks is None:
+            print("🔄 Running analysis...")
+            picks = run_full_analysis()
 
         if not picks:
             print("No picks generated today")
             await self.close()
             return
 
-        # Generate daily brief
-        print("✍️ Generating daily brief...")
-        brief = generate_daily_brief(picks)
+        if brief is None:
+            print("✍️ Generating daily brief...")
+            brief = generate_daily_brief(picks)
 
         try:
             channel = await self.fetch_channel(MLB_CHANNEL_ID)
@@ -123,7 +142,7 @@ def test_output():
     for i, pick in enumerate(picks, 1):
         writeup = generate_pick_writeup(pick)
         direction = "OVER" if "OVER" in pick["recommendation"] else "UNDER"
-        grade = pick["recommendation"].split("Grade: ")[-1].split(" |")[0].strip()
+        grade = pick.get("grade") or pick["recommendation"].split("Grade: ")[-1].split(" |")[0].strip()
         print(f"#{i} {pick['pitcher']} — {direction} {pick['line']} K")
         print(f"Projection: {pick['projection']} K | Grade: {grade} | Confidence: {pick['confidence']}%")
         print(f"Analysis: {writeup}")

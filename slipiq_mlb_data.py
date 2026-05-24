@@ -35,19 +35,34 @@ def get_pitcher_id(pitcher_name):
         return results[0]["id"], results[0]["fullName"]
     return None, None
 
-def get_pitcher_game_log(pitcher_id, season=2025):
-    """Get pitcher's game log for the season"""
-    stats = statsapi.player_stat_data(
-        pitcher_id,
-        group="pitching",
-        type="gameLog",
-        sportId=1
-    )
-    return stats
+def get_pitcher_game_log(pitcher_id, season=None):
+    """
+    Per-start game log splits from MLB Stats API.
+    Uses the raw endpoint so every start is returned (statsapi wrapper can collapse to one row).
+    """
+    if season is None:
+        season = datetime.now().year
+
+    url = f"https://statsapi.mlb.com/api/v1/people/{pitcher_id}/stats"
+    params = {"stats": "gameLog", "group": "pitching", "season": season}
+
+    try:
+        response = requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        payload = response.json()
+        stats = payload.get("stats", [])
+        if not stats:
+            return []
+        return stats[0].get("splits", [])
+    except Exception as e:
+        print(f"Game log error for player {pitcher_id}: {e}")
+        return []
 
 # ─── Baseball Savant ─────────────────────────────────────────
 
-def get_savant_pitcher_stats(pitcher_name, season=2025):
+def get_savant_pitcher_stats(pitcher_name, season=None):
+    if season is None:
+        season = datetime.now().year
     """Pull Statcast data for a pitcher from Baseball Savant"""
     try:
         start_date = f"{season}-03-01"
@@ -64,7 +79,9 @@ def get_savant_pitcher_stats(pitcher_name, season=2025):
         print(f"Savant error for {pitcher_name}: {e}")
         return None
 
-def get_pitcher_statcast(pitcher_mlbam_id, season=2025):
+def get_pitcher_statcast(pitcher_mlbam_id, season=None):
+    if season is None:
+        season = datetime.now().year
     """Get pitch-level Statcast data for strikeout modeling"""
     try:
         start = f"{season}-03-01"
