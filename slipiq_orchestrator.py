@@ -8,17 +8,21 @@ Schedule (ET):
 
 Run modes:
   py slipiq_orchestrator.py           — run once immediately
-  py slipiq_orchestrator.py --now     — run once immediately
   py slipiq_orchestrator.py --schedule — run on schedule (keeps running)
 """
 
 import os
 import time
 import schedule
+import discord
+import asyncio
 from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
+
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+
 
 # ─── Pipeline ─────────────────────────────────────────────────
 
@@ -61,26 +65,24 @@ def run_pipeline():
         print("\n[3/4] Generating AI analysis via Groq...")
         from slipiq_writer import generate_daily_brief
         brief = generate_daily_brief(picks)
-        print(f"      ✅ Brief: {brief[:100]}...")
+        print(f"      ✅ Brief generated")
 
         # ── Step 4: Post to Discord ───────────────────────────
         print("\n[4/4] Posting picks to Discord...")
 
-        DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
         if not DISCORD_BOT_TOKEN:
             print("      ❌ DISCORD_BOT_TOKEN not set in .env")
             return
 
-        import discord
         from slipiq_discord import SlipIQBot
 
-        import asyncio
-intents = discord.Intents.default()
-bot = SlipIQBot(intents=intents)
-try:
-    bot.run(DISCORD_BOT_TOKEN)
-except Exception as e:
-    print(f"Discord bot finished: {e}")
+        intents = discord.Intents.default()
+        bot = SlipIQBot(intents=intents)
+
+        try:
+            bot.run(DISCORD_BOT_TOKEN)
+        except Exception as e:
+            print(f"      Discord session ended: {e}")
 
         print(f"\n✅ Pipeline complete — {datetime.now().strftime('%H:%M:%S')}")
 
@@ -89,21 +91,15 @@ except Exception as e:
         import traceback
         traceback.print_exc()
 
+
 # ─── Scheduler ────────────────────────────────────────────────
 
 def start_scheduler():
     """
     Runs pipeline on schedule — keeps running until Ctrl+C
-    
-    12:00 PM ET = 9:00 AM AZ  — Morning run
-                                Lines are live
-                                Starters confirmed
-                                You have time to review before first pitch
 
-    4:00 PM ET  = 1:00 PM AZ  — Pre-game run  
-                                Catches late line movement
-                                Catches late scratches
-                                Most first pitches are 1-4pm ET
+    12:00 PM ET = 9:00 AM AZ  — Morning run
+    4:00 PM ET  = 1:00 PM AZ  — Pre-game run
     """
     print("\n" + "="*52)
     print("SlipIQ Orchestrator — Scheduled Mode")
@@ -118,7 +114,7 @@ def start_scheduler():
     schedule.every().day.at("12:00").do(run_pipeline)
     schedule.every().day.at("16:00").do(run_pipeline)
 
-    # Run immediately if we're already past 12pm ET
+    # Run immediately if already past 12pm ET
     now = datetime.now()
     if now.hour >= 12:
         print("\nPast 12pm ET — running pipeline now...")
@@ -129,6 +125,7 @@ def start_scheduler():
         schedule.run_pending()
         time.sleep(60)
 
+
 # ─── Entry Point ──────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -137,5 +134,4 @@ if __name__ == "__main__":
     if "--schedule" in sys.argv:
         start_scheduler()
     else:
-        # Default — run once immediately
         run_pipeline()
