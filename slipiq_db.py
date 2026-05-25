@@ -5,19 +5,47 @@ Falls back to local JSON when SUPABASE_URL / SUPABASE_KEY are not set.
 
 import json
 import os
+import shutil
 from datetime import datetime, date
 
 RESULTS_FILE = "slipiq_results.json"
 _client = None
+_supabase_import_ok = None
+_supabase_warned = False
+
+
+def _supabase_available():
+    """True only if package is installed (can fail on Python 3.14 without build tools)."""
+    global _supabase_import_ok
+    if _supabase_import_ok is None:
+        try:
+            from supabase import create_client  # noqa: F401
+            _supabase_import_ok = True
+        except ImportError:
+            _supabase_import_ok = False
+    return _supabase_import_ok
 
 
 def is_configured():
-    return bool(os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_KEY"))
+    return bool(
+        os.getenv("SUPABASE_URL")
+        and os.getenv("SUPABASE_KEY")
+        and _supabase_available()
+    )
 
 
 def get_client():
     global _client
-    if not is_configured():
+    if not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_KEY"):
+        return None
+    if not _supabase_available():
+        global _supabase_warned
+        if not _supabase_warned:
+            print(
+                "Supabase env set but 'supabase' package not installed - using local JSON only. "
+                "Run: pip install supabase  (or remove SUPABASE_* from .env)"
+            )
+            _supabase_warned = True
         return None
     if _client is None:
         from supabase import create_client
@@ -74,16 +102,58 @@ def _row_to_entry(row):
     }
 
 
+def to_json_safe(value):
+    """Convert numpy/pandas scalars to plain Python types for json.dump."""
+    if value is None:
+        return None
+    if type(value) is bool:
+        return value
+    if isinstance(value, (str, int, float)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): to_json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [to_json_safe(v) for v in value]
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    # numpy.bool_, numpy.float64, etc. (type(bool) is not numpy.bool_)
+    try:
+        import numpy as np
+
+        if isinstance(value, np.generic):
+            return to_json_safe(value.item())
+    except ImportError:
+        pass
+    if hasattr(value, "item"):
+        try:
+            return to_json_safe(value.item())
+        except (ValueError, TypeError):
+            pass
+    return value
+
+
 def load_results_json():
     if not os.path.exists(RESULTS_FILE):
         return []
-    with open(RESULTS_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(RESULTS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        backup = RESULTS_FILE + ".corrupt.bak"
+        shutil.copy2(RESULTS_FILE, backup)
+        print(
+            f"WARNING: {RESULTS_FILE} was corrupt ({e}). "
+            f"Backed up to {backup}. Starting with empty results."
+        )
+        return []
 
 
 def save_results_json(results):
-    with open(RESULTS_FILE, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2)
+    safe = to_json_safe(results)
+    tmp_path = RESULTS_FILE + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(safe, f, indent=2)
+    os.replace(tmp_path, RESULTS_FILE)
 
 
 def load_results():
@@ -171,8 +241,8 @@ def pick_entry_from_log(pick, result=None):
     if pick.get("ev_score") is not None:
         entry["ev_score"] = pick["ev_score"]
     if pick.get("slip_review"):
-        entry["slip_review"] = pick["slip_review"]
-    return entry
+        entry["slip_review"] = to_json_safe(pick["slip_review"])
+    return to_json_safe(entry)
 
 
 if __name__ == "__main__":

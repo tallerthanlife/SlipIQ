@@ -12,16 +12,6 @@ MIN_DISPLAY_CONF = float(os.getenv("SLIP_MIN_DISPLAY_CONF", "58"))
 MIN_TRACK_RECORD_PCT = float(os.getenv("SLIP_MIN_TRACK_RECORD", "50"))
 
 
-STEPS = [
-    "edge_check",
-    "model_confidence",
-    "agentic_confidence",
-    "track_record",
-    "trend_alignment",
-    "bankroll_gate",
-]
-
-
 def _direction(pick):
     return "OVER" if "OVER" in pick.get("recommendation", "") else "UNDER"
 
@@ -70,19 +60,26 @@ def step_track_record(pick):
         }
 
     rate = None
+    sample_size = 0
     if "%" in label:
         try:
             rate = float(label.split("%")[0].split()[-1])
+            if "(" in label and "/" in label:
+                parts = label.split("(")[-1].split(")")[0].split("/")
+                sample_size = int(parts[1]) if len(parts) == 2 else 0
         except (ValueError, IndexError):
             rate = None
 
-    if rate is None:
-        passed = True
-        detail = label or "No history"
-    else:
-        passed = rate >= MIN_TRACK_RECORD_PCT
-        detail = f"{label} (min {MIN_TRACK_RECORD_PCT}%)"
+    # Need at least 5 samples before enforcing track record
+    if rate is None or sample_size < 5:
+        return {
+            "name": "4. Track Record",
+            "passed": True,
+            "detail": label or "Insufficient sample — pass by default",
+        }
 
+    passed = rate >= MIN_TRACK_RECORD_PCT
+    detail = f"{label} (min {MIN_TRACK_RECORD_PCT}%)"
     return {"name": "4. Track Record", "passed": passed, "detail": detail}
 
 
@@ -94,12 +91,13 @@ def step_trend_alignment(pick):
         detail = "Neutral trend — no conflict"
     elif trend == "HOT":
         passed = direction == "OVER"
-        detail = f"HOT trend vs {direction} pick"
+        detail = f"HOT trend vs {direction} pick — {'aligned' if passed else 'advisory only'}"
     else:  # COLD
         passed = direction == "UNDER"
-        detail = f"COLD trend vs {direction} pick"
+        detail = f"COLD trend vs {direction} pick — {'aligned' if passed else 'advisory only'}"
 
-    return {"name": "5. Trend Alignment", "passed": passed, "detail": detail}
+    # Trend misalignment is advisory — never hard-kill a pick
+    return {"name": "5. Trend Alignment", "passed": True, "detail": detail, "advisory": not passed}
 
 
 def step_bankroll_gate(pick):
@@ -115,10 +113,7 @@ def step_bankroll_gate(pick):
 
 
 def review_pick(pick):
-    """
-    Run 6-step checklist on one pick.
-    Returns dict with passed, score, steps, units.
-    """
+    """Run 6-step checklist on one pick."""
     steps = [
         step_edge_check(pick),
         step_model_confidence(pick),
@@ -128,15 +123,16 @@ def review_pick(pick):
         step_bankroll_gate(pick),
     ]
 
+    steps = [{**s, "passed": bool(s["passed"])} for s in steps]
     passed_count = sum(1 for s in steps if s["passed"])
-    score = round(passed_count / len(steps) * 100)
+    score = int(round(passed_count / len(steps) * 100))
     all_passed = passed_count == len(steps)
-    units = next((s.get("units") for s in steps if s["name"] == "6. Bankroll Gate"), 0.5)
+    units = float(next((s.get("units") for s in steps if s["name"] == "6. Bankroll Gate"), 0.5))
 
     return {
-        "passed": all_passed,
+        "passed": bool(all_passed),
         "score": score,
-        "steps_passed": passed_count,
+        "steps_passed": int(passed_count),
         "steps_total": len(steps),
         "units": units,
         "steps": steps,
@@ -144,10 +140,7 @@ def review_pick(pick):
 
 
 def review_picks(picks, require_all_passed=False):
-    """
-    Review all picks; attach slip_review to each.
-    Returns (picks_with_review, approved_picks).
-    """
+    """Review all picks; attach slip_review to each."""
     if not picks:
         return [], []
 
@@ -160,9 +153,8 @@ def review_picks(picks, require_all_passed=False):
     approved = [p for p in reviewed if p["slip_review"]["passed"]]
 
     if require_all_passed and not approved:
-        # Fallback: top 3 by checklist score so pipeline never goes empty
         reviewed.sort(key=lambda p: p["slip_review"]["score"], reverse=True)
-        approved = reviewed[: min(3, len(reviewed))]
+        approved = reviewed[:min(3, len(reviewed))]
 
     return reviewed, approved
 

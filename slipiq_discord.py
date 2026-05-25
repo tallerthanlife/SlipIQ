@@ -209,6 +209,58 @@ class SlipIQBot(discord.Client):
         await self.close()
 
 
+CHANNEL_MAP = [
+    ("CHANNEL_MLB_PITCHER_PROPS", MLB_CHANNEL_ID, "MLB pitcher props"),
+    ("CHANNEL_DAILY_BEST_PICK", DAILY_BEST_CHANNEL_ID, "Daily best pick"),
+    ("CHANNEL_SHARP_REVIEW", SHARP_REVIEW_CHANNEL_ID, "Sharp Review"),
+    ("CHANNEL_SLIP_BUILDER", SLIP_BUILDER_CHANNEL_ID, "Slip builder"),
+    ("CHANNEL_RESULTS_PUBLIC", RESULTS_PUBLIC_CHANNEL_ID, "Results public"),
+]
+
+
+class DiscordConnectionTest(discord.Client):
+    """Posts a test embed to every configured channel — no Odds API / Groq needed."""
+
+    async def on_ready(self):
+        print(f"Bot online as {self.user}\n")
+        posted = 0
+
+        for env_name, channel_id, label in CHANNEL_MAP:
+            if not channel_id:
+                print(f"  SKIP {env_name} (not set)")
+                continue
+            try:
+                ch = await self.fetch_channel(channel_id)
+                embed = discord.Embed(
+                    title="SlipIQ connection test",
+                    description=f"If you see this, **#{ch.name}** is wired correctly.",
+                    color=0x5865F2,
+                )
+                embed.add_field(name="Channel", value=label, inline=True)
+                embed.add_field(name="Channel ID", value=str(channel_id), inline=True)
+                embed.set_footer(text="SlipIQ • --discord-test")
+                await ch.send(embed=embed)
+                print(f"  OK  {env_name} -> #{ch.name}")
+                posted += 1
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                print(f"  FAIL {env_name} ({channel_id}): {e}")
+
+        if posted == 0:
+            print("\nNo channels posted. Set at least one CHANNEL_* ID in .env")
+        else:
+            print(f"\nPosted to {posted} channel(s). Check Discord.")
+        await self.close()
+
+
+def run_discord_connection_test():
+    if not DISCORD_BOT_TOKEN:
+        print("DISCORD_BOT_TOKEN not set in .env")
+        return
+    intents = discord.Intents.default()
+    DiscordConnectionTest(intents=intents).run(DISCORD_BOT_TOKEN)
+
+
 def test_output():
     """Test full output without posting to Discord"""
     print("=== SlipIQ Discord Test ===\n")
@@ -238,9 +290,11 @@ if __name__ == "__main__":
 
     if "--test" in sys.argv:
         test_output()
+    elif "--discord-test" in sys.argv:
+        run_discord_connection_test()
     elif not DISCORD_BOT_TOKEN:
         print("❌ DISCORD_BOT_TOKEN not set in .env")
-        print("Run with --test flag to test without Discord")
+        print("Run with --test (console only) or set DISCORD_BOT_TOKEN for --discord-test")
     else:
         intents = discord.Intents.default()
         bot = SlipIQBot(intents=intents)

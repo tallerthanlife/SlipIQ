@@ -15,6 +15,7 @@ ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 BASE_URL = "https://api.the-odds-api.com/v4"
 MAX_EVENTS = int(os.getenv("ODDS_MAX_EVENTS", "15"))
 
+
 # ─── Fetch Props ──────────────────────────────────────────────
 
 def get_mlb_pitcher_props():
@@ -33,7 +34,6 @@ def get_mlb_pitcher_props():
     }
 
     try:
-        # Step 1 - Get today's event IDs
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
         events = response.json()
@@ -45,7 +45,6 @@ def get_mlb_pitcher_props():
         print(f"Found {len(events)} MLB games today")
         props = []
 
-        # Step 2 - Get pitcher strikeout props for each game
         for event in events[:MAX_EVENTS]:
             event_id = event["id"]
             home = event["home_team"]
@@ -70,8 +69,13 @@ def get_mlb_pitcher_props():
             if not bookmakers:
                 continue
 
-            # Use first available bookmaker
-            bookmaker = bookmakers[0]
+            # Prefer DraftKings or FanDuel
+            preferred = None
+            for bm in bookmakers:
+                if bm["title"] in ("DraftKings", "FanDuel"):
+                    preferred = bm
+                    break
+            bookmaker = preferred or bookmakers[0]
             markets = bookmaker.get("markets", [])
 
             for market in markets:
@@ -93,6 +97,7 @@ def get_mlb_pitcher_props():
         print(f"Odds API error: {e}")
         return []
 
+
 # ─── Match Props to Model ─────────────────────────────────────
 
 def run_full_analysis():
@@ -102,14 +107,13 @@ def run_full_analysis():
     """
     print("=== SlipIQ Daily Lines Analysis ===\n")
 
-    # Get live props
     props = get_mlb_pitcher_props()
 
     if not props:
         print("No props available. Check your ODDS_API_KEY in .env")
-        return
+        return []
 
-    # Deduplicate pitchers
+    # Deduplicate — keep Over side only
     seen = set()
     unique_props = []
     for prop in props:
@@ -127,34 +131,47 @@ def run_full_analysis():
 
         projection = run_pitcher_model(pitcher, line=line, verbose=False)
 
-        if projection and projection["confidence"] >= 60:
-            rec = get_recommendation(projection, line)
-            if "PASS" not in rec:
-                picks.append({
-                    "pitcher": pitcher,
-                    "line": line,
-                    "projection": projection["projection"],
-                    "recommendation": rec,
-                    "confidence": projection["confidence"],
-                    "trend": projection["trend"],
-                    "season_avg": projection["season_avg"],
-                    "last_3_avg": projection["last_3_avg"],
-                    "last_5_avg": projection["last_5_avg"],
-                    "bookmaker": prop["bookmaker"],
-                    "home_team": prop.get("home_team"),
-                    "away_team": prop.get("away_team"),
-                })
+        if not projection:
+            continue
+
+        # Minimum confidence — 55% to cast wide net
+        if projection["confidence"] < 55:
+            continue
+
+        # Minimum edge — projection must differ from line by 0.3+
+        edge = abs(projection["projection"] - line)
+        if edge < 0.3:
+            continue
+
+        rec = get_recommendation(projection, line)
+        if "PASS" in rec:
+            continue
+
+        picks.append({
+            "pitcher": pitcher,
+            "line": line,
+            "projection": projection["projection"],
+            "recommendation": rec,
+            "confidence": projection["confidence"],
+            "trend": projection["trend"],
+            "season_avg": projection["season_avg"],
+            "last_3_avg": projection["last_3_avg"],
+            "last_5_avg": projection["last_5_avg"],
+            "bookmaker": prop["bookmaker"],
+            "home_team": prop.get("home_team"),
+            "away_team": prop.get("away_team"),
+        })
+
+    if not picks:
+        print("No picks cleared the model threshold today")
+        return []
 
     # Agentic confidence + hit-rate-aware grades
     print("\nRunning confidence agent on picks...")
     from slipiq_confidence_agent import enrich_picks
     picks = enrich_picks(picks)
 
-    top_n = int(os.getenv("SLIPIQ_TOP_PICKS", "0"))
-    if top_n > 0:
-        picks = picks[:top_n]
-
-    # Print picks
+    # Print full slate
     print("\n" + "="*50)
     print("SlipIQ PICKS OF THE DAY")
     print("="*50)
@@ -167,7 +184,7 @@ def run_full_analysis():
             print(f"  Line:       {pick['line']} K")
             print(f"  Projection: {pick['projection']} K")
             print(f"  Pick:       {pick['recommendation']}")
-            print(f"  Model conf: {pick.get('model_confidence')}% → Display: {pick.get('display_confidence')}%")
+            print(f"  Model conf: {pick.get('model_confidence')}% -> Display: {pick.get('display_confidence')}%")
             print(f"  Track rec:  {pick.get('hit_rate_label', '—')}")
             print(f"  Trend:      {pick['trend']}")
             print(f"  Source:     {pick['bookmaker']}")

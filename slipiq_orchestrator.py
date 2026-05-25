@@ -70,20 +70,26 @@ def run_pipeline():
             return
         print(f"      ✅ {len(picks)} picks generated")
 
-        # ── Step 3: Slip review checklist ────────────────────
+        # ── Step 3: Slip review checklist ─────────────────────
         print("\n[3/7] Running 6-step slip review...")
         from slipiq_slip_review import review_picks, format_review_text
 
         picks, approved = review_picks(picks, require_all_passed=False)
         print(f"      {len(approved)}/{len(picks)} picks passed full checklist")
+
+        # Never let slip review zero out the slate
         if approved:
             picks = approved
+        else:
+            print("      No picks passed all steps — using all reviewed picks (caution flags shown)")
+            picks = sorted(picks, key=lambda p: p.get("slip_review", {}).get("score", 0), reverse=True)
+
         for pick in picks[:3]:
             review = pick.get("slip_review", {})
             status = "APPROVED" if review.get("passed") else "CAUTION"
             print(f"      [{status}] {pick['pitcher']} ({review.get('score', 0)}%)")
 
-        # ── Step 4: Curate daily best ─────────────────────────
+        # ── Step 4: Curate daily best ──────────────────────────
         print("\n[4/7] Curating daily best pick...")
         from slipiq_curate import select_daily_best, daily_best_summary
 
@@ -93,14 +99,14 @@ def run_pipeline():
             if daily_best.get("slip_review"):
                 print(format_review_text(daily_best["slip_review"]))
 
-        # ── Step 5: Groq brief ────────────────────────────────
+        # ── Step 5: Groq brief ─────────────────────────────────
         print("\n[5/7] Generating AI daily brief...")
         from slipiq_writer import generate_daily_brief
 
         brief = generate_daily_brief(picks)
         print("      Brief generated")
 
-        # ── Step 6: Log picks ─────────────────────────────────
+        # ── Step 6: Log picks ──────────────────────────────────
         print("\n[6/7] Logging picks...")
         from slipiq_results import log_pick
         from slipiq_db import is_configured
@@ -110,7 +116,7 @@ def run_pipeline():
         if is_configured():
             print("      Synced to Supabase")
 
-        # ── Step 7: Discord ───────────────────────────────────
+        # ── Step 7: Discord ────────────────────────────────────
         print("\n[7/7] Posting to Discord...")
         if not DISCORD_BOT_TOKEN:
             print("      ❌ DISCORD_BOT_TOKEN not set — picks logged only")
