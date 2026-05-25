@@ -1,10 +1,9 @@
 """
 SlipIQ Batter Lines
-Fetches live batter prop lines from Odds API
+Fetches live batter prop lines from Odds API with caching
 Runs batter model against each line and generates curated picks
 """
 
-import requests
 import os
 from dotenv import load_dotenv
 from slipiq_batter_model import run_batter_model, get_batter_recommendation
@@ -18,112 +17,91 @@ MAX_EVENTS = int(os.getenv("ODDS_MAX_EVENTS", "15"))
 BATTER_MARKETS = [
     "batter_hits",
     "batter_total_bases",
-    
 ]
 
 MARKET_TO_PROP = {
     "batter_hits": "hits",
     "batter_total_bases": "total_bases",
-    
 }
 
-MIN_GAMES = 10  # Minimum games analyzed before trusting projection
+MIN_GAMES = 10
 
 
 # ─── Fetch Batter Props ───────────────────────────────────────
 
 def get_mlb_batter_props():
-    """Fetch live batter props from Odds API"""
+    """Fetch live batter props from Odds API with caching"""
     if not ODDS_API_KEY:
         print("ERROR: ODDS_API_KEY not set")
         return []
 
-    url = f"{BASE_URL}/sports/baseball_mlb/events"
-    params = {"apiKey": ODDS_API_KEY, "regions": "us"}
+    from slipiq_cache import get_events_cached, get_event_odds_cached
 
-    try:
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        events = response.json()
-
-        if not events:
-            return []
-
-        print(f"Fetching batter props for {min(len(events), MAX_EVENTS)} games...")
-        props = []
-
-        for event in events[:MAX_EVENTS]:
-            event_id = event["id"]
-            home = event["home_team"]
-            away = event["away_team"]
-
-            prop_url = f"{BASE_URL}/sports/baseball_mlb/events/{event_id}/odds"
-            prop_params = {
-                "apiKey": ODDS_API_KEY,
-                "regions": "us",
-                "markets": ",".join(BATTER_MARKETS),
-                "oddsFormat": "american",
-            }
-
-            prop_response = requests.get(prop_url, params=prop_params, timeout=10)
-            if prop_response.status_code != 200:
-                continue
-
-            prop_data = prop_response.json()
-            bookmakers = prop_data.get("bookmakers", [])
-            if not bookmakers:
-                continue
-
-            preferred = None
-            for bm in bookmakers:
-                if bm["title"] in ("DraftKings", "FanDuel"):
-                    preferred = bm
-                    break
-            bookmaker = preferred or bookmakers[0]
-
-            for market in bookmaker.get("markets", []):
-                market_key = market["key"]
-                prop_type = MARKET_TO_PROP.get(market_key)
-                if not prop_type:
-                    continue
-
-                for outcome in market["outcomes"]:
-                    props.append({
-                        "batter": outcome["description"],
-                        "prop_type": prop_type,
-                        "line": outcome["point"],
-                        "direction": outcome["name"],
-                        "odds": outcome["price"],
-                        "home_team": home,
-                        "away_team": away,
-                        "bookmaker": bookmaker["title"],
-                    })
-
-        return props
-
-    except requests.exceptions.RequestException as e:
-        print(f"Odds API batter props error: {e}")
+    events = get_events_cached(ODDS_API_KEY, BASE_URL)
+    if not events:
         return []
+
+    print(f"Fetching batter props for {min(len(events), MAX_EVENTS)} games...")
+    props = []
+
+    for event in events[:MAX_EVENTS]:
+        event_id = event["id"]
+        home = event["home_team"]
+        away = event["away_team"]
+
+        prop_data = get_event_odds_cached(
+            event_id,
+            ",".join(BATTER_MARKETS),
+            ODDS_API_KEY,
+            BASE_URL,
+        )
+        if not prop_data:
+            continue
+
+        bookmakers = prop_data.get("bookmakers", [])
+        if not bookmakers:
+            continue
+
+        preferred = None
+        for bm in bookmakers:
+            if bm["title"] in ("DraftKings", "FanDuel"):
+                preferred = bm
+                break
+        bookmaker = preferred or bookmakers[0]
+
+        for market in bookmaker.get("markets", []):
+            market_key = market["key"]
+            prop_type = MARKET_TO_PROP.get(market_key)
+            if not prop_type:
+                continue
+
+            for outcome in market["outcomes"]:
+                props.append({
+                    "batter": outcome["description"],
+                    "prop_type": prop_type,
+                    "line": outcome["point"],
+                    "direction": outcome["name"],
+                    "odds": outcome["price"],
+                    "home_team": home,
+                    "away_team": away,
+                    "bookmaker": bookmaker["title"],
+                })
+
+    return props
 
 
 # ─── Curation Filter ──────────────────────────────────────────
 
 def passes_curation(prop_type, line, proj, confidence, games_analyzed):
-    """
-    Strict curation — only keep meaningful edges.
-    Returns True if pick should be included.
-    """
-    # Hard minimum — need real sample size
+    """Strict curation — only keep meaningful edges"""
     if games_analyzed < MIN_GAMES:
         return False
 
     edge = abs(proj - line)
 
     if prop_type == "hits":
-        # Skip OVER 0.5 hits — almost everyone averages above 0.5, no real edge
         if line < 1.0 and proj > line:
             return False
-        # UNDER 0.5 needs projection well below line
         if line <= 0.5 and proj >= 0.35:
             return False
         if edge < 0.25:
@@ -136,20 +114,7 @@ def passes_curation(prop_type, line, proj, confidence, games_analyzed):
             return False
         if confidence < 65:
             return False
-        # OVER 1.5 TB needs clear projection above
         if line <= 1.5 and proj > line and edge < 0.4:
-            return False
-
-    elif prop_type == "rbi":
-        if edge < 0.25:
-            return False
-        if confidence < 65:
-            return False
-        # Skip weak OVER 0.5 RBI
-        if line <= 0.5 and proj > line and proj < 0.75:
-            return False
-        # Skip near-zero projections
-        if proj < 0.05:
             return False
 
     return True
@@ -193,13 +158,11 @@ def run_batter_analysis():
     for batter, prop_types in batter_props.items():
         hits_line = prop_types.get("hits", {}).get("line")
         tb_line = prop_types.get("total_bases", {}).get("line")
-        rbi_line = prop_types.get("rbi", {}).get("line")
 
         profile = run_batter_model(
             batter,
             hits_line=hits_line,
             tb_line=tb_line,
-            rbi_line=rbi_line,
             verbose=False,
         )
 
@@ -218,7 +181,6 @@ def run_batter_analysis():
             proj = proj_data["projection"]
             confidence = proj_data["confidence"]
 
-            # Apply strict curation with games filter
             if not passes_curation(prop_type, line, proj, confidence, games_analyzed):
                 continue
 
@@ -247,7 +209,7 @@ def run_batter_analysis():
                 "away_team": prop_data.get("away_team"),
             })
 
-    # Sort by confidence descending
+    # Sort by confidence
     picks.sort(key=lambda x: x["confidence"], reverse=True)
 
     # Print results
@@ -255,11 +217,7 @@ def run_batter_analysis():
     print("SlipIQ BATTER PICKS")
     print("="*50)
 
-    prop_labels = {
-        "hits": "Hits",
-        "total_bases": "Total Bases",
-        "rbi": "RBI",
-    }
+    prop_labels = {"hits": "Hits", "total_bases": "Total Bases"}
 
     if not picks:
         print("No high confidence batter picks today")

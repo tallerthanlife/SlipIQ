@@ -27,14 +27,19 @@ ET = ZoneInfo("America/New_York")
 
 def run_pipeline():
     """
-    Full SlipIQ pipeline:
-    0. Auto-settle yesterday's picks (Sharp Review agent)
+    Full SlipIQ pipeline — all heavy data pulling happens BEFORE Discord bot starts
+    to prevent async heartbeat blocking.
+
+    0. Auto-settle yesterday's picks
     1. Pull today's MLB games
-    2. Fetch live lines + model + confidence agent
+    2. Pitcher props — full market analysis + confidence agent
     3. Six-step slip review
     4. Curate daily best pick
     5. Generate Groq brief
-    6. Log picks (JSON + Supabase) + post to Discord
+    6. Batter props analysis
+    7. Build slate parlay
+    8. Log picks
+    9. Post everything to Discord
     """
     print(f"\n{'='*52}")
     print(f"SlipIQ Pipeline — {datetime.now(ET).strftime('%Y-%m-%d %H:%M:%S %Z')}")
@@ -42,7 +47,7 @@ def run_pipeline():
 
     try:
         # ── Step 0: Settle pending picks ──────────────────────
-        print("\n[0/7] Sharp Review — settling pending picks...")
+        print("\n[0/9] Sharp Review — settling pending picks...")
         from slipiq_sharp_review_agent import auto_settle_pending
         from slipiq_results import calculate_hit_rates
 
@@ -51,7 +56,7 @@ def run_pipeline():
         print(f"      ✅ {len(settled_today)} settled | stats: {sharp_stats is not None}")
 
         # ── Step 1: MLB Data ──────────────────────────────────
-        print("\n[1/7] Pulling today's MLB games...")
+        print("\n[1/9] Pulling today's MLB games...")
         from slipiq_mlb_data import get_todays_games
 
         games = get_todays_games()
@@ -60,28 +65,27 @@ def run_pipeline():
             return
         print(f"      ✅ {len(games)} games found")
 
-        # ── Step 2: Lines + Model + Confidence ────────────────
-        print("\n[2/7] Fetching lines + model + confidence agent...")
-        from slipiq_lines import run_full_analysis
+        # ── Step 2: Pitcher Props ─────────────────────────────
+        print("\n[2/9] Fetching pitcher props + model + confidence agent...")
+        from slipiq_pitcher_props import run_full_pitcher_props_analysis
 
-        picks = run_full_analysis()
+        picks = run_full_pitcher_props_analysis()
         if not picks:
             print("      No high confidence picks today. Pipeline stopped.")
             return
-        print(f"      ✅ {len(picks)} picks generated")
+        print(f"      ✅ {len(picks)} pitcher prop picks generated")
 
-        # ── Step 3: Slip review checklist ─────────────────────
-        print("\n[3/7] Running 6-step slip review...")
+        # ── Step 3: Slip review ───────────────────────────────
+        print("\n[3/9] Running 6-step slip review...")
         from slipiq_slip_review import review_picks, format_review_text
 
         picks, approved = review_picks(picks, require_all_passed=False)
         print(f"      {len(approved)}/{len(picks)} picks passed full checklist")
 
-        # Never let slip review zero out the slate
         if approved:
             picks = approved
         else:
-            print("      No picks passed all steps — using all reviewed picks (caution flags shown)")
+            print("      No picks passed all steps — using all reviewed picks")
             picks = sorted(picks, key=lambda p: p.get("slip_review", {}).get("score", 0), reverse=True)
 
         for pick in picks[:3]:
@@ -89,25 +93,46 @@ def run_pipeline():
             status = "APPROVED" if review.get("passed") else "CAUTION"
             print(f"      [{status}] {pick['pitcher']} ({review.get('score', 0)}%)")
 
-        # ── Step 4: Curate daily best ──────────────────────────
-        print("\n[4/7] Curating daily best pick...")
+        # ── Step 4: Curate daily best ─────────────────────────
+        print("\n[4/9] Curating daily best pick...")
         from slipiq_curate import select_daily_best, daily_best_summary
 
         daily_best = select_daily_best(picks)
         if daily_best:
             print(f"      {daily_best_summary(daily_best)}")
-            if daily_best.get("slip_review"):
-                print(format_review_text(daily_best["slip_review"]))
 
-        # ── Step 5: Groq brief ─────────────────────────────────
-        print("\n[5/7] Generating AI daily brief...")
+        # ── Step 5: Groq brief ────────────────────────────────
+        print("\n[5/9] Generating AI daily brief...")
         from slipiq_writer import generate_daily_brief
 
         brief = generate_daily_brief(picks)
         print("      Brief generated")
 
-        # ── Step 6: Log picks ──────────────────────────────────
-        print("\n[6/7] Logging picks...")
+        # ── Step 6: Batter props ──────────────────────────────
+        print("\n[6/9] Running batter props analysis...")
+        batter_picks = []
+        try:
+            from slipiq_batter_lines import run_batter_analysis
+            batter_picks = run_batter_analysis()
+            print(f"      ✅ {len(batter_picks)} batter picks generated")
+        except Exception as e:
+            print(f"      Batter analysis failed: {e}")
+
+        # ── Step 7: Slate parlay ──────────────────────────────
+        print("\n[7/9] Building slate parlay...")
+        parlay = None
+        try:
+            from slipiq_slate_parlay import build_slate_parlay
+            parlay = build_slate_parlay(picks, batter_picks)
+            if parlay:
+                print(f"      ✅ {parlay['total_legs']}-leg parlay built across {parlay['games_covered']} games")
+            else:
+                print("      No parlay built today")
+        except Exception as e:
+            print(f"      Parlay build failed: {e}")
+
+        # ── Step 8: Log picks ─────────────────────────────────
+        print("\n[8/9] Logging picks...")
         from slipiq_results import log_pick
         from slipiq_db import is_configured
 
@@ -116,8 +141,8 @@ def run_pipeline():
         if is_configured():
             print("      Synced to Supabase")
 
-        # ── Step 7: Discord ────────────────────────────────────
-        print("\n[7/7] Posting to Discord...")
+        # ── Step 9: Discord ───────────────────────────────────
+        print("\n[9/9] Posting to Discord...")
         if not DISCORD_BOT_TOKEN:
             print("      ❌ DISCORD_BOT_TOKEN not set — picks logged only")
             return
@@ -132,6 +157,8 @@ def run_pipeline():
             daily_best=daily_best,
             sharp_review_stats=sharp_stats,
             settled_today=settled_today,
+            batter_picks=batter_picks,
+            parlay=parlay,
         )
         try:
             bot.run(DISCORD_BOT_TOKEN)

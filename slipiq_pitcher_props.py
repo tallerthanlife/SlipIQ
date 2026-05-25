@@ -1,19 +1,11 @@
 """
 SlipIQ Pitcher Props — Full Market Coverage
-Pulls all pitcher prop markets from Odds API:
-- Strikeouts (already in slipiq_lines.py — duplicated here for unified output)
-- Outs recorded
-- Hits allowed
-- Walks allowed
-- Pitches thrown
-Runs projections on each and returns curated picks
+Pulls pitcher_strikeouts and pitcher_outs from Odds API
+Uses cache to minimize API calls — lines cached for 6 hours
 """
 
-import requests
 import os
 from dotenv import load_dotenv
-from slipiq_mlb_data import get_pitcher_id, get_pitcher_game_log
-from slipiq_pitcher_model import parse_game_log
 
 load_dotenv()
 
@@ -21,7 +13,6 @@ ODDS_API_KEY = os.getenv("ODDS_API_KEY")
 BASE_URL = "https://api.the-odds-api.com/v4"
 MAX_EVENTS = int(os.getenv("ODDS_MAX_EVENTS", "15"))
 
-# All pitcher prop markets
 PITCHER_MARKETS = [
     "pitcher_strikeouts",
     "pitcher_outs",
@@ -30,161 +21,120 @@ PITCHER_MARKETS = [
 MARKET_LABELS = {
     "pitcher_strikeouts": "Strikeouts",
     "pitcher_outs": "Outs Recorded",
-    "pitcher_hits_allowed": "Hits Allowed",
-    "pitcher_walks": "Walks",
-    "pitcher_pitches_thrown": "Pitches Thrown",
 }
 
 
 # ─── Fetch All Pitcher Props ──────────────────────────────────
 
 def get_all_pitcher_props():
-    """
-    Pull all pitcher prop markets from Odds API
-    Returns grouped by pitcher name
-    """
+    """Pull all pitcher prop markets from Odds API with caching"""
     if not ODDS_API_KEY:
         print("ERROR: ODDS_API_KEY not set")
         return {}
 
-    url = f"{BASE_URL}/sports/baseball_mlb/events"
-    params = {"apiKey": ODDS_API_KEY, "regions": "us"}
+    from slipiq_cache import get_events_cached, get_event_odds_cached
 
-    try:
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        events = response.json()
-
-        if not events:
-            return {}
-
-        print(f"Pulling full pitcher props for {min(len(events), MAX_EVENTS)} games...")
-        pitcher_props = {}
-
-        for event in events[:MAX_EVENTS]:
-            event_id = event["id"]
-            home = event["home_team"]
-            away = event["away_team"]
-
-            prop_url = f"{BASE_URL}/sports/baseball_mlb/events/{event_id}/odds"
-            prop_params = {
-                "apiKey": ODDS_API_KEY,
-                "regions": "us",
-                "markets": ",".join(PITCHER_MARKETS),
-                "oddsFormat": "american",
-            }
-
-            prop_response = requests.get(prop_url, params=prop_params, timeout=10)
-            if prop_response.status_code != 200:
-                continue
-
-            prop_data = prop_response.json()
-            bookmakers = prop_data.get("bookmakers", [])
-            if not bookmakers:
-                continue
-
-            # Prefer DraftKings or FanDuel
-            preferred = None
-            for bm in bookmakers:
-                if bm["title"] in ("DraftKings", "FanDuel"):
-                    preferred = bm
-                    break
-            bookmaker = preferred or bookmakers[0]
-
-            for market in bookmaker.get("markets", []):
-                market_key = market["key"]
-                if market_key not in PITCHER_MARKETS:
-                    continue
-
-                prop_label = MARKET_LABELS.get(market_key, market_key)
-
-                for outcome in market["outcomes"]:
-                    pitcher = outcome.get("description", "")
-                    if not pitcher:
-                        continue
-
-                    if pitcher not in pitcher_props:
-                        pitcher_props[pitcher] = {
-                            "home_team": home,
-                            "away_team": away,
-                            "bookmaker": bookmaker["title"],
-                            "props": {}
-                        }
-
-                    if prop_label not in pitcher_props[pitcher]["props"]:
-                        pitcher_props[pitcher]["props"][prop_label] = {}
-
-                    direction = outcome.get("name", "Over")
-                    pitcher_props[pitcher]["props"][prop_label][direction] = {
-                        "line": outcome.get("point", 0),
-                        "odds": outcome.get("price", -110),
-                    }
-
-        return pitcher_props
-
-    except requests.exceptions.RequestException as e:
-        print(f"Pitcher props API error: {e}")
+    # Get events (cached)
+    events = get_events_cached(ODDS_API_KEY, BASE_URL)
+    if not events:
         return {}
 
+    print(f"Pulling full pitcher props for {min(len(events), MAX_EVENTS)} games...")
 
-# ─── Project Each Prop ────────────────────────────────────────
+    # Supplement with Pinnacle for strikeouts
+    pinnacle_props = {}
+    try:
+        from slipiq_pinnacle_props import get_pinnacle_pitcher_props
+        p_props = get_pinnacle_pitcher_props()
+        for pp in p_props:
+            name = pp["pitcher"]
+            if name not in pinnacle_props:
+                pinnacle_props[name] = pp
+    except Exception:
+        pass
 
-def project_pitcher_stat(df, stat_type):
-    """
-    Project a pitcher stat from game log data
-    Returns projection dict or None
-    """
-    import numpy as np
+    pitcher_props = {}
 
-    if df is None or df.empty or len(df) < 3:
-        return None
+    for event in events[:MAX_EVENTS]:
+        event_id = event["id"]
+        home = event["home_team"]
+        away = event["away_team"]
 
-    # Map stat type to dataframe column
-    col_map = {
-        "Strikeouts": "strikeouts",
-        "Outs Recorded": "outs",
-        "Hits Allowed": "hits",
-        "Walks": "walks",
-        "Pitches Thrown": "pitches",
-    }
+        # Get odds (cached)
+        prop_data = get_event_odds_cached(
+            event_id,
+            ",".join(PITCHER_MARKETS),
+            ODDS_API_KEY,
+            BASE_URL,
+        )
+        if not prop_data:
+            continue
 
-    col = col_map.get(stat_type)
-    if not col or col not in df.columns:
-        return None
+        bookmakers = prop_data.get("bookmakers", [])
+        if not bookmakers:
+            continue
 
-    series = df[col].dropna()
-    if len(series) < 3:
-        return None
+        # Prefer DraftKings or FanDuel
+        preferred = None
+        for bm in bookmakers:
+            if bm["title"] in ("DraftKings", "FanDuel"):
+                preferred = bm
+                break
+        bookmaker = preferred or bookmakers[0]
 
-    season_avg = round(series.mean(), 1)
-    last_5 = round(series.head(5).mean(), 1)
-    last_3 = round(series.head(3).mean(), 1)
-    std = series.std()
+        for market in bookmaker.get("markets", []):
+            market_key = market["key"]
+            if market_key not in PITCHER_MARKETS:
+                continue
 
-    projection = round(
-        season_avg * 0.30 + last_5 * 0.40 + last_3 * 0.30, 1
-    )
+            prop_label = MARKET_LABELS.get(market_key, market_key)
 
-    confidence = max(40, min(90, 100 - (std * 8)))
+            for outcome in market["outcomes"]:
+                pitcher = outcome.get("description", "")
+                if not pitcher:
+                    continue
 
-    return {
-        "projection": projection,
-        "season_avg": season_avg,
-        "last_5_avg": last_5,
-        "last_3_avg": last_3,
-        "std_dev": round(std, 2),
-        "confidence": round(confidence, 1),
-        "games_analyzed": len(series),
-    }
+                if pitcher not in pitcher_props:
+                    pitcher_props[pitcher] = {
+                        "home_team": home,
+                        "away_team": away,
+                        "bookmaker": bookmaker["title"],
+                        "props": {}
+                    }
 
+                if prop_label not in pitcher_props[pitcher]["props"]:
+                    pitcher_props[pitcher]["props"][prop_label] = {}
+
+                direction = outcome.get("name", "Over")
+                pitcher_props[pitcher]["props"][prop_label][direction] = {
+                    "line": outcome.get("point", 0),
+                    "odds": outcome.get("price", -110),
+                }
+
+    # Add Pinnacle pitchers not already covered
+    for name, pp in pinnacle_props.items():
+        if name not in pitcher_props and pp.get("direction") == "Over":
+            pitcher_props[name] = {
+                "home_team": pp.get("home_team", ""),
+                "away_team": pp.get("away_team", ""),
+                "bookmaker": "Pinnacle",
+                "props": {
+                    "Strikeouts": {
+                        "Over": {"line": pp["line"], "odds": pp.get("odds", -110)}
+                    }
+                }
+            }
+
+    return pitcher_props
+
+
+# ─── Enhanced Game Log ────────────────────────────────────────
 
 def get_enhanced_game_log(pitcher_name):
-    """
-    Pull game log with all pitching stats
-    Returns dataframe with outs, hits, walks, pitches columns added
-    """
+    """Pull game log with strikeouts, outs, hits, walks, pitches"""
     import statsapi
     import pandas as pd
+    from slipiq_mlb_data import get_pitcher_id
 
     pitcher_id, _ = get_pitcher_id(pitcher_name)
     if not pitcher_id:
@@ -235,12 +185,62 @@ def get_enhanced_game_log(pitcher_name):
         return None
 
 
+# ─── Project Each Prop ────────────────────────────────────────
+
+def project_pitcher_stat(df, stat_type):
+    """Project a pitcher stat from game log data"""
+    if df is None or df.empty or len(df) < 3:
+        return None
+
+    col_map = {
+        "Strikeouts": "strikeouts",
+        "Outs Recorded": "outs",
+        "Hits Allowed": "hits",
+        "Walks": "walks",
+        "Pitches Thrown": "pitches",
+    }
+
+    col = col_map.get(stat_type)
+    if not col or col not in df.columns:
+        return None
+
+    series = df[col].dropna()
+    if len(series) < 3:
+        return None
+
+    season_avg = round(float(series.mean()), 1)
+    last_5 = round(float(series.head(5).mean()), 1)
+    last_3 = round(float(series.head(3).mean()), 1)
+    std = float(series.std())
+
+    projection = round(season_avg * 0.30 + last_5 * 0.40 + last_3 * 0.30, 1)
+    confidence = round(max(40, min(90, 100 - (std * 8))), 1)
+
+    if last_3 > last_5 > season_avg:
+        trend = "HOT"
+    elif last_3 < last_5 < season_avg:
+        trend = "COLD"
+    else:
+        trend = "NEUTRAL"
+
+    return {
+        "projection": projection,
+        "season_avg": season_avg,
+        "last_5_avg": last_5,
+        "last_3_avg": last_3,
+        "std_dev": round(std, 2),
+        "confidence": confidence,
+        "games_analyzed": len(series),
+        "trend": trend,
+    }
+
+
 # ─── Full Analysis ────────────────────────────────────────────
 
 def run_full_pitcher_props_analysis():
     """
-    Pull all pitcher prop markets and run projections
-    Returns list of picks across all prop types
+    Pull all pitcher prop markets, run projections, enrich with confidence agent
+    Returns list of picks sorted by confidence
     """
     print("\n=== SlipIQ Full Pitcher Props Analysis ===\n")
 
@@ -265,8 +265,6 @@ def run_full_pitcher_props_analysis():
 
         for prop_label, prop_sides in data["props"].items():
             over_data = prop_sides.get("Over", {})
-            under_data = prop_sides.get("Under", {})
-
             if not over_data:
                 continue
 
@@ -282,29 +280,14 @@ def run_full_pitcher_props_analysis():
             confidence = proj_data["confidence"]
             edge = abs(proj - line)
 
-            # Prop-specific thresholds
-            min_edge = {
-                "Strikeouts": 0.5,
-                "Outs Recorded": 1.5,
-                "Hits Allowed": 1.0,
-                "Walks": 0.5,
-                "Pitches Thrown": 5.0,
-            }.get(prop_label, 0.5)
-
-            min_conf = {
-                "Strikeouts": 60,
-                "Outs Recorded": 60,
-                "Hits Allowed": 55,
-                "Walks": 55,
-                "Pitches Thrown": 55,
-            }.get(prop_label, 60)
+            min_edge = {"Strikeouts": 0.5, "Outs Recorded": 1.5}.get(prop_label, 0.5)
+            min_conf = {"Strikeouts": 55, "Outs Recorded": 55}.get(prop_label, 55)
 
             if confidence < min_conf or edge < min_edge:
                 continue
 
             direction = "OVER" if proj > line else "UNDER"
 
-            # Grade
             if confidence >= 72 and edge >= min_edge * 1.5:
                 grade = "A"
             elif confidence >= 65 and edge >= min_edge:
@@ -323,6 +306,7 @@ def run_full_pitcher_props_analysis():
                 "season_avg": proj_data["season_avg"],
                 "last_3_avg": proj_data["last_3_avg"],
                 "last_5_avg": proj_data["last_5_avg"],
+                "trend": proj_data["trend"],
                 "games_analyzed": proj_data["games_analyzed"],
                 "bookmaker": bookmaker,
                 "home_team": home_team,
@@ -333,7 +317,21 @@ def run_full_pitcher_props_analysis():
     # Sort by confidence
     all_picks.sort(key=lambda x: x["confidence"], reverse=True)
 
-    # Print results
+    # Run confidence agent on strikeout picks only
+    try:
+        from slipiq_confidence_agent import enrich_picks
+        k_picks = [p for p in all_picks if p["prop_type"] == "Strikeouts"]
+        other_picks = [p for p in all_picks if p["prop_type"] != "Strikeouts"]
+
+        if k_picks:
+            print("Running confidence agent on strikeout picks...")
+            k_picks = enrich_picks(k_picks)
+            all_picks = k_picks + other_picks
+            all_picks.sort(key=lambda x: x["confidence"], reverse=True)
+    except Exception as e:
+        print(f"Confidence agent skipped: {e}")
+
+    # Print results grouped by pitcher
     print("\n" + "="*50)
     print("SlipIQ PITCHER PROPS — ALL MARKETS")
     print("="*50)
@@ -345,11 +343,10 @@ def run_full_pitcher_props_analysis():
         for pick in all_picks:
             if pick["pitcher"] != current_pitcher:
                 current_pitcher = pick["pitcher"]
-                print(f"\n🔵 {current_pitcher}")
-
+                print(f"\n🔵 {current_pitcher} ({pick['bookmaker']})")
             print(f"  {pick['prop_type']}: {pick['direction']} {pick['line']} "
-                  f"| Proj: {pick['projection']} | Grade: {pick['grade']} "
-                  f"| Conf: {pick['confidence']}%")
+                  f"| Proj: {pick['projection']} | {pick['trend']} "
+                  f"| Grade: {pick['grade']} | Conf: {pick['confidence']}%")
 
     print(f"\nTotal pitcher prop picks: {len(all_picks)}")
     return all_picks
