@@ -1,6 +1,6 @@
 """
 SlipIQ Discord Bot
-Posts MLB pitcher props, batter props, daily best pick, and Sharp Review debriefs.
+Posts MLB pitcher props, batter props, slate parlay, daily best pick, and Sharp Review.
 Personal use — all picks go to your private server.
 """
 
@@ -46,7 +46,7 @@ def direction_emoji(rec):
     return "⬆️" if "OVER" in rec else "⬇️"
 
 
-# ─── Pitcher Pick Embeds ──────────────────────────────────────
+# ─── Pitcher Embeds ───────────────────────────────────────────
 
 def build_pick_embed(pick, rank, writeup=None, daily_best=False):
     direction = "OVER" if "OVER" in pick["recommendation"] else "UNDER"
@@ -97,14 +97,10 @@ def build_header_embed(picks, brief=None):
     return embed
 
 
-# ─── Batter Pick Embeds ───────────────────────────────────────
+# ─── Batter Embeds ────────────────────────────────────────────
 
 def build_batter_embed(pick, rank):
-    prop_labels = {
-        "hits": "Hits",
-        "total_bases": "Total Bases",
-        "rbi": "RBI",
-    }
+    prop_labels = {"hits": "Hits", "total_bases": "Total Bases", "rbi": "RBI"}
     label = prop_labels.get(pick["prop_type"], pick["prop_type"])
     direction = "OVER" if "OVER" in pick["recommendation"] else "UNDER"
     grade = pick.get("grade", "B")
@@ -165,6 +161,7 @@ class SlipIQBot(discord.Client):
         picks = self._picks
         brief = self._brief
         daily_best = self._daily_best
+        batter_picks = []
 
         if picks is None:
             print("🔄 Running pitcher analysis...")
@@ -203,7 +200,7 @@ class SlipIQBot(discord.Client):
                     await channel.send(embed=build_pick_embed(pick, i, writeup))
                     await asyncio.sleep(1.5)
 
-                print(f"✅ Posted {len(picks)} picks to MLB channel")
+                print(f"✅ Posted {len(picks)} pitcher picks to Discord")
 
             # ── Batter props ──────────────────────────────────
             if MLB_CHANNEL_ID:
@@ -226,6 +223,25 @@ class SlipIQBot(discord.Client):
                         print("No batter picks today")
                 except Exception as e:
                     print(f"Batter picks error: {e}")
+
+            # ── Slate Parlay ──────────────────────────────────
+            if MLB_CHANNEL_ID:
+                try:
+                    print("🔄 Building slate parlay...")
+                    from slipiq_slate_parlay import build_slate_parlay, build_parlay_embed
+
+                    parlay = build_slate_parlay(picks, batter_picks)
+
+                    if parlay:
+                        channel = await self.fetch_channel(MLB_CHANNEL_ID)
+                        embed = build_parlay_embed(parlay)
+                        if embed:
+                            await channel.send(embed=embed)
+                            print(f"✅ Posted slate parlay — {parlay['total_legs']} legs")
+                    else:
+                        print("No slate parlay built today")
+                except Exception as e:
+                    print(f"Slate parlay error: {e}")
 
             # ── Slip builder ──────────────────────────────────
             if SLIP_BUILDER_CHANNEL_ID and daily_best and daily_best.get("slip_review"):
@@ -275,7 +291,7 @@ class SlipIQBot(discord.Client):
 # ─── Connection Test ──────────────────────────────────────────
 
 CHANNEL_MAP = [
-    ("CHANNEL_MLB_PITCHER_PROPS", MLB_CHANNEL_ID, "MLB pitcher + batter props"),
+    ("CHANNEL_MLB_PITCHER_PROPS", MLB_CHANNEL_ID, "MLB pitcher + batter props + parlay"),
     ("CHANNEL_DAILY_BEST_PICK", DAILY_BEST_CHANNEL_ID, "Daily best pick"),
     ("CHANNEL_SHARP_REVIEW", SHARP_REVIEW_CHANNEL_ID, "Sharp Review"),
     ("CHANNEL_SLIP_BUILDER", SLIP_BUILDER_CHANNEL_ID, "Slip builder"),
@@ -349,12 +365,21 @@ def test_output():
     print("\n--- Batter Picks ---\n")
     from slipiq_batter_lines import run_batter_analysis
     batter_picks = run_batter_analysis()
+
     prop_labels = {"hits": "Hits", "total_bases": "Total Bases", "rbi": "RBI"}
     for i, pick in enumerate(batter_picks[:15], 1):
         label = prop_labels.get(pick["prop_type"], pick["prop_type"])
         direction = "OVER" if "OVER" in pick["recommendation"] else "UNDER"
         print(f"#{i} {pick['batter']} — {label} {direction} {pick['line']}")
         print(f"  Grade: {pick['grade']} | Confidence: {pick['confidence']}%\n")
+
+    print("\n--- Slate Parlay ---\n")
+    from slipiq_slate_parlay import build_slate_parlay, format_parlay_text
+    parlay = build_slate_parlay(picks, batter_picks)
+    if parlay:
+        print(format_parlay_text(parlay))
+    else:
+        print("No parlay today")
 
 
 # ─── Runner ───────────────────────────────────────────────────
