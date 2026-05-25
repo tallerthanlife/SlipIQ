@@ -18,13 +18,13 @@ MAX_EVENTS = int(os.getenv("ODDS_MAX_EVENTS", "15"))
 BATTER_MARKETS = [
     "batter_hits",
     "batter_total_bases",
-    "batter_rbis",
+    
 ]
 
 MARKET_TO_PROP = {
     "batter_hits": "hits",
     "batter_total_bases": "total_bases",
-    "batter_rbis": "rbi",
+    
 }
 
 MIN_GAMES = 10  # Minimum games analyzed before trusting projection
