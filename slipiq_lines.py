@@ -1,6 +1,6 @@
 """
 SlipIQ Lines Module
-Fetches real pitcher strikeout prop lines from Odds API
+Fetches real pitcher strikeout prop lines from Odds API + Pinnacle
 Compares against model projection to generate picks
 """
 
@@ -16,7 +16,7 @@ BASE_URL = "https://api.the-odds-api.com/v4"
 MAX_EVENTS = int(os.getenv("ODDS_MAX_EVENTS", "15"))
 
 
-# ─── Fetch Props ──────────────────────────────────────────────
+# ─── Fetch Props — Odds API ───────────────────────────────────
 
 def get_mlb_pitcher_props():
     """
@@ -98,16 +98,46 @@ def get_mlb_pitcher_props():
         return []
 
 
+# ─── Supplement with Pinnacle ─────────────────────────────────
+
+def get_combined_props():
+    """
+    Pull props from Odds API then supplement with Pinnacle
+    for any pitchers not already covered
+    """
+    props = get_mlb_pitcher_props()
+
+    try:
+        from slipiq_pinnacle_props import get_pinnacle_pitcher_props
+        pinnacle_props = get_pinnacle_pitcher_props()
+
+        if pinnacle_props:
+            existing = {p["pitcher"].lower() for p in props}
+            added = 0
+            for pp in pinnacle_props:
+                if pp["pitcher"].lower() not in existing:
+                    props.append(pp)
+                    existing.add(pp["pitcher"].lower())
+                    added += 1
+            if added:
+                print(f"Added {added} pitchers from Pinnacle")
+
+    except Exception as e:
+        print(f"Pinnacle supplement skipped: {e}")
+
+    return props
+
+
 # ─── Match Props to Model ─────────────────────────────────────
 
 def run_full_analysis():
     """
-    Pull live lines + run model on each pitcher
+    Pull live lines from all sources + run model on each pitcher
     Output: ranked list of picks for today
     """
     print("=== SlipIQ Daily Lines Analysis ===\n")
 
-    props = get_mlb_pitcher_props()
+    props = get_combined_props()
 
     if not props:
         print("No props available. Check your ODDS_API_KEY in .env")
@@ -134,11 +164,11 @@ def run_full_analysis():
         if not projection:
             continue
 
-        # Minimum confidence — 55% to cast wide net
+        # Minimum confidence
         if projection["confidence"] < 55:
             continue
 
-        # Minimum edge — projection must differ from line by 0.3+
+        # Minimum edge
         edge = abs(projection["projection"] - line)
         if edge < 0.3:
             continue
