@@ -1,7 +1,8 @@
 """
 SlipIQ Batter Lines
-Fetches live batter prop lines from Odds API with caching
-Runs batter model against each line and generates curated picks
+Primary source: SportsData.io (free, no quota)
+Fallback: Odds API (cached, preserves quota)
+Prop types: Hits, Total Bases, RBI, Runs, Home Runs
 """
 
 import os
@@ -26,16 +27,37 @@ MARKET_TO_PROP = {
 
 MIN_GAMES = 10
 
+# All prop types from SportsData.io
+SPORTSDATA_PROP_TYPES = ["hits", "total_bases", "rbi", "runs", "home_runs"]
+
 
 # ─── Fetch Batter Props ───────────────────────────────────────
 
 def get_mlb_batter_props():
-    """Fetch live batter props from Odds API with caching"""
+    """
+    Fetch batter props — SportsData.io primary, Odds API fallback
+    Returns list of prop dicts
+    """
+    # 1. Try SportsData.io first (free, full coverage)
+    try:
+        from slipiq_sportsdata import get_batter_props as sd_batters
+        props = sd_batters()
+        if props:
+            batters = len(set(p["batter"] for p in props))
+            print(f"Batter props from SportsData.io: {batters} batters")
+            return props
+    except Exception as e:
+        print(f"SportsData.io batter props failed: {e}")
+
+    # 2. Fallback to Odds API with cache
+    print("Falling back to Odds API for batter props...")
     if not ODDS_API_KEY:
-        print("ERROR: ODDS_API_KEY not set")
         return []
 
-    from slipiq_cache import get_events_cached, get_event_odds_cached
+    try:
+        from slipiq_cache import get_events_cached, get_event_odds_cached
+    except Exception:
+        return []
 
     events = get_events_cached(ODDS_API_KEY, BASE_URL)
     if not events:
@@ -117,6 +139,26 @@ def passes_curation(prop_type, line, proj, confidence, games_analyzed):
         if line <= 1.5 and proj > line and edge < 0.4:
             return False
 
+    elif prop_type == "rbi":
+        if edge < 0.25:
+            return False
+        if confidence < 65:
+            return False
+        if proj < 0.05:
+            return False
+
+    elif prop_type == "runs":
+        if edge < 0.2:
+            return False
+        if confidence < 60:
+            return False
+
+    elif prop_type == "home_runs":
+        if edge < 0.15:
+            return False
+        if confidence < 60:
+            return False
+
     return True
 
 
@@ -135,19 +177,27 @@ def run_batter_analysis():
         print("No batter props available today")
         return []
 
-    # Group by batter
+    # Group by batter — collect all prop types
     batter_props = {}
     for prop in props:
-        if prop["direction"] != "Over":
+        if prop.get("direction") not in ("Over", "Over "):
             continue
-        batter = prop["batter"]
+        batter = prop.get("batter", prop.get("Name", ""))
+        if not batter:
+            continue
+
+        prop_type = prop.get("prop_type")
+        if not prop_type:
+            continue
+
         if batter not in batter_props:
             batter_props[batter] = {}
-        batter_props[batter][prop["prop_type"]] = {
+
+        batter_props[batter][prop_type] = {
             "line": prop["line"],
-            "bookmaker": prop["bookmaker"],
-            "home_team": prop["home_team"],
-            "away_team": prop["away_team"],
+            "bookmaker": prop.get("bookmaker", "SportsData"),
+            "home_team": prop.get("home_team", ""),
+            "away_team": prop.get("away_team", ""),
         }
 
     print(f"Found {len(batter_props)} batters with props")
@@ -158,11 +208,13 @@ def run_batter_analysis():
     for batter, prop_types in batter_props.items():
         hits_line = prop_types.get("hits", {}).get("line")
         tb_line = prop_types.get("total_bases", {}).get("line")
+        rbi_line = prop_types.get("rbi", {}).get("line")
 
         profile = run_batter_model(
             batter,
             hits_line=hits_line,
             tb_line=tb_line,
+            rbi_line=rbi_line,
             verbose=False,
         )
 
@@ -173,8 +225,9 @@ def run_batter_analysis():
 
         for prop_type, prop_data in prop_types.items():
             line = prop_data["line"]
-            proj_data = profile.get(prop_type)
 
+            # Map prop type to profile key
+            proj_data = profile.get(prop_type)
             if not proj_data:
                 continue
 
@@ -205,11 +258,10 @@ def run_batter_analysis():
                 "direction": direction,
                 "grade": grade,
                 "bookmaker": prop_data["bookmaker"],
-                "home_team": prop_data.get("home_team"),
-                "away_team": prop_data.get("away_team"),
+                "home_team": prop_data.get("home_team", ""),
+                "away_team": prop_data.get("away_team", ""),
             })
 
-    # Sort by confidence
     picks.sort(key=lambda x: x["confidence"], reverse=True)
 
     # Print results
@@ -217,7 +269,14 @@ def run_batter_analysis():
     print("SlipIQ BATTER PICKS")
     print("="*50)
 
-    prop_labels = {"hits": "Hits", "total_bases": "Total Bases"}
+    prop_labels = {
+        "hits": "Hits",
+        "total_bases": "Total Bases",
+        "rbi": "RBI",
+        "runs": "Runs",
+        "home_runs": "Home Runs",
+        "batter_strikeouts": "Strikeouts",
+    }
 
     if not picks:
         print("No high confidence batter picks today")

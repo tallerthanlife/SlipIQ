@@ -1,7 +1,8 @@
 """
 SlipIQ Pitcher Props — Full Market Coverage
-Pulls pitcher_strikeouts and pitcher_outs from Odds API
-Uses cache to minimize API calls — lines cached for 6 hours
+Primary source: SportsData.io (free, no quota)
+Fallback: Odds API (cached, preserves quota)
+Prop types: Strikeouts, Outs Recorded, Hits Allowed, Runs Allowed
 """
 
 import os
@@ -24,24 +25,42 @@ MARKET_LABELS = {
 }
 
 
-# ─── Fetch All Pitcher Props ──────────────────────────────────
+# ─── Fetch Pitcher Props ──────────────────────────────────────
 
 def get_all_pitcher_props():
-    """Pull all pitcher prop markets from Odds API with caching"""
+    """
+    Pull pitcher props — SportsData.io primary, Odds API fallback
+    Returns dict keyed by pitcher name in standard format
+    """
+    # 1. Try SportsData.io first (free, no quota limits)
+    try:
+        from slipiq_sportsdata import get_pitcher_props as sd_pitchers
+        props = sd_pitchers()
+        if props:
+            print(f"Pitcher props from SportsData.io: {len(props)} pitchers")
+            return props
+    except Exception as e:
+        print(f"SportsData.io pitcher props failed: {e}")
+
+    # 2. Fallback to Odds API with cache
+    print("Falling back to Odds API for pitcher props...")
     if not ODDS_API_KEY:
         print("ERROR: ODDS_API_KEY not set")
         return {}
 
-    from slipiq_cache import get_events_cached, get_event_odds_cached
+    try:
+        from slipiq_cache import get_events_cached, get_event_odds_cached
+    except Exception as e:
+        print(f"Cache error: {e}")
+        return {}
 
-    # Get events (cached)
     events = get_events_cached(ODDS_API_KEY, BASE_URL)
     if not events:
         return {}
 
-    print(f"Pulling full pitcher props for {min(len(events), MAX_EVENTS)} games...")
+    print(f"Pulling pitcher props for {min(len(events), MAX_EVENTS)} games...")
 
-    # Supplement with Pinnacle for strikeouts
+    # Supplement with Pinnacle
     pinnacle_props = {}
     try:
         from slipiq_pinnacle_props import get_pinnacle_pitcher_props
@@ -60,7 +79,6 @@ def get_all_pitcher_props():
         home = event["home_team"]
         away = event["away_team"]
 
-        # Get odds (cached)
         prop_data = get_event_odds_cached(
             event_id,
             ",".join(PITCHER_MARKETS),
@@ -74,7 +92,6 @@ def get_all_pitcher_props():
         if not bookmakers:
             continue
 
-        # Prefer DraftKings or FanDuel
         preferred = None
         for bm in bookmakers:
             if bm["title"] in ("DraftKings", "FanDuel"):
@@ -111,7 +128,6 @@ def get_all_pitcher_props():
                     "odds": outcome.get("price", -110),
                 }
 
-    # Add Pinnacle pitchers not already covered
     for name, pp in pinnacle_props.items():
         if name not in pitcher_props and pp.get("direction") == "Over":
             pitcher_props[name] = {
@@ -131,7 +147,7 @@ def get_all_pitcher_props():
 # ─── Enhanced Game Log ────────────────────────────────────────
 
 def get_enhanced_game_log(pitcher_name):
-    """Pull game log with strikeouts, outs, hits, walks, pitches"""
+    """Pull game log with all pitching stats"""
     import statsapi
     import pandas as pd
     from slipiq_mlb_data import get_pitcher_id
@@ -196,6 +212,7 @@ def project_pitcher_stat(df, stat_type):
         "Strikeouts": "strikeouts",
         "Outs Recorded": "outs",
         "Hits Allowed": "hits",
+        "Runs Allowed": "hits",
         "Walks": "walks",
         "Pitches Thrown": "pitches",
     }
@@ -259,9 +276,9 @@ def run_full_pitcher_props_analysis():
         if df is None or df.empty:
             continue
 
-        bookmaker = data["bookmaker"]
-        home_team = data["home_team"]
-        away_team = data["away_team"]
+        bookmaker = data.get("bookmaker", "Unknown")
+        home_team = data.get("home_team", "")
+        away_team = data.get("away_team", "")
 
         for prop_label, prop_sides in data["props"].items():
             over_data = prop_sides.get("Over", {})
@@ -280,8 +297,14 @@ def run_full_pitcher_props_analysis():
             confidence = proj_data["confidence"]
             edge = abs(proj - line)
 
-            min_edge = {"Strikeouts": 0.5, "Outs Recorded": 1.5}.get(prop_label, 0.5)
-            min_conf = {"Strikeouts": 55, "Outs Recorded": 55}.get(prop_label, 55)
+            min_edge = {
+                "Strikeouts": 0.5,
+                "Outs Recorded": 1.5,
+                "Hits Allowed": 0.5,
+                "Runs Allowed": 0.5,
+            }.get(prop_label, 0.5)
+
+            min_conf = 55
 
             if confidence < min_conf or edge < min_edge:
                 continue
@@ -314,7 +337,6 @@ def run_full_pitcher_props_analysis():
                 "recommendation": f"{direction} {line} | Grade: {grade} | Confidence: {confidence}%",
             })
 
-    # Sort by confidence
     all_picks.sort(key=lambda x: x["confidence"], reverse=True)
 
     # Run confidence agent on strikeout picks only
