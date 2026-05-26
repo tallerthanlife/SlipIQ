@@ -228,7 +228,7 @@ def format_parlay_text(parlay):
         )
 
     lines.append("")
-    lines.append(f"*All legs from DraftKings/FanDuel. Verify lines before submitting.*")
+    lines.append(f"*Bet on DraftKings · Fanatics · PrizePicks. Verify lines before submitting.*")
 
     return "\n".join(lines)
 
@@ -272,7 +272,7 @@ def build_parlay_embed(parlay):
 
     embed.add_field(
         name="📡 Books",
-        value="DraftKings / FanDuel / Pinnacle — verify lines before submitting",
+        value="DraftKings · Fanatics · PrizePicks — verify lines before submitting",
         inline=False,
     )
 

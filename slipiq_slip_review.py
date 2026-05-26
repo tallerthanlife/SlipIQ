@@ -3,13 +3,17 @@ SlipIQ Slip Review — 6-step pre-bet checklist
 Validates each pick before it ships to Discord / results.
 """
 
-import os
+from slipiq_env import (
+    SLIP_MIN_DISPLAY_CONF,
+    SLIP_MIN_EDGE,
+    SLIP_MIN_MODEL_CONF,
+    SLIP_MIN_TRACK_RECORD,
+)
 
-# Step thresholds (override via .env)
-MIN_EDGE = float(os.getenv("SLIP_MIN_EDGE", "0.75"))
-MIN_MODEL_CONF = float(os.getenv("SLIP_MIN_MODEL_CONF", "60"))
-MIN_DISPLAY_CONF = float(os.getenv("SLIP_MIN_DISPLAY_CONF", "58"))
-MIN_TRACK_RECORD_PCT = float(os.getenv("SLIP_MIN_TRACK_RECORD", "50"))
+MIN_EDGE = SLIP_MIN_EDGE
+MIN_MODEL_CONF = SLIP_MIN_MODEL_CONF
+MIN_DISPLAY_CONF = SLIP_MIN_DISPLAY_CONF
+MIN_TRACK_RECORD_PCT = SLIP_MIN_TRACK_RECORD
 
 
 def _direction(pick):

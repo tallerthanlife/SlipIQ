@@ -3,26 +3,13 @@ SlipIQ Sharp Review Agent
 Auto-settles pending picks from MLB box scores and posts debrief to Discord.
 """
 
-import os
 from datetime import date, timedelta
-from dotenv import load_dotenv
 
-from slipiq_mlb_data import get_pitcher_id, get_pitcher_game_log
 from slipiq_db import load_results, save_results
+from slipiq_env import DISCORD_BOT_TOKEN, DISCORD_SHARP_REVIEW_CHANNEL
 from slipiq_results import calculate_hit_rates, update_result
 
-load_dotenv()
-
-
-def _env_int(name, default=0):
-    raw = os.getenv(name, "")
-    try:
-        return int(raw) if raw else default
-    except ValueError:
-        return default
-
-
-CHANNEL_SHARP_REVIEW = _env_int("CHANNEL_SHARP_REVIEW")
+CHANNEL_SHARP_REVIEW = int(DISCORD_SHARP_REVIEW_CHANNEL) if DISCORD_SHARP_REVIEW_CHANNEL else 0
 
 
 def get_actual_strikeouts(pitcher_name, game_date, search_days=2):
@@ -219,7 +206,7 @@ def run_sharp_review(post_discord=False):
     if not post_discord or not CHANNEL_SHARP_REVIEW:
         return settled, stats
 
-    token = os.getenv("DISCORD_BOT_TOKEN")
+    token = DISCORD_BOT_TOKEN
     if not token:
         print("  Discord post skipped — no DISCORD_BOT_TOKEN")
         return settled, stats

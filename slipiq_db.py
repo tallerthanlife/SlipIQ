@@ -27,16 +27,16 @@ def _supabase_available():
 
 
 def is_configured():
-    return bool(
-        os.getenv("SUPABASE_URL")
-        and os.getenv("SUPABASE_KEY")
-        and _supabase_available()
-    )
+    from slipiq_env import SUPABASE_KEY, SUPABASE_URL
+
+    return bool(SUPABASE_URL and SUPABASE_KEY and _supabase_available())
 
 
 def get_client():
     global _client
-    if not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_KEY"):
+    from slipiq_env import SUPABASE_KEY, SUPABASE_URL
+
+    if not SUPABASE_URL or not SUPABASE_KEY:
         return None
     if not _supabase_available():
         global _supabase_warned
@@ -50,7 +50,7 @@ def get_client():
     if _client is None:
         from supabase import create_client
 
-        _client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+        _client = create_client(SUPABASE_URL, SUPABASE_KEY)
     return _client
 
 

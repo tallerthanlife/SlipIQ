@@ -1,304 +1,324 @@
-"""
-SlipIQ Batter Lines
-Primary source: SportsData.io (free, no quota)
-Fallback: Odds API (cached, preserves quota)
-Prop types: Hits, Total Bases, RBI, Runs, Home Runs
-"""
+# slipiq_batter_lines.py
+# Batter prop lines from ParlayAPI
+# Phase 2 — runs after pitcher model is confirmed
+#
+# MARKETS COVERED:
+#   player_hits, player_total_bases, player_home_runs,
+#   player_rbis, player_runs, player_singles, player_doubles,
+#   player_stolen_bases, player_hitter_strikeouts,
+#   player_walks, player_hits_runs_rbis
+#
+# OUTPUT:
+#   Normalized batter prop lines aggregated by player + market
+#   Ready for slipiq_batter_model.py projection engine
+#
+# CREDIT COST:
+#   0 additional credits — reuses cached /props from pitcher run
+#   get_all_props() pulls everything in one 3-credit call
 
-import os
-from dotenv import load_dotenv
-from slipiq_batter_model import run_batter_model, get_batter_recommendation
+import json
+from datetime import datetime
+from pathlib import Path
+from collections import defaultdict
 
-load_dotenv()
+from slipiq_parlayapi import (
+    get_batter_props,
+    aggregate_by_player,
+    SPORT_MLB,
+    BATTER_PROP_KEYS,
+    AZ_BLOCKED_BOOKS,
+)
 
-ODDS_API_KEY = os.getenv("ODDS_API_KEY")
-BASE_URL = "https://api.the-odds-api.com/v4"
-MAX_EVENTS = int(os.getenv("ODDS_MAX_EVENTS", "15"))
+CACHE_DIR = Path("cache")
+CACHE_DIR.mkdir(exist_ok=True)
 
-BATTER_MARKETS = [
-    "batter_hits",
-    "batter_total_bases",
-]
-
-MARKET_TO_PROP = {
-    "batter_hits": "hits",
-    "batter_total_bases": "total_bases",
+# ─────────────────────────────────────────
+# TARGET MARKETS — what we actually model
+# ─────────────────────────────────────────
+PRIMARY_MARKETS = {
+    "player_hits",
+    "player_total_bases",
+    "player_home_runs",
+    "player_rbis",
+    "player_runs",
 }
 
-MIN_GAMES = 10
+SECONDARY_MARKETS = {
+    "player_singles",
+    "player_doubles",
+    "player_stolen_bases",
+    "player_hitter_strikeouts",
+    "player_walks",
+    "player_hits_runs_rbis",
+}
 
-# All prop types from SportsData.io
-SPORTSDATA_PROP_TYPES = ["hits", "total_bases", "rbi", "runs", "home_runs"]
+# Minimum line values — filter noise
+MIN_LINES = {
+    "player_hits":             0.5,
+    "player_total_bases":      0.5,
+    "player_home_runs":        0.5,
+    "player_rbis":             0.5,
+    "player_runs":             0.5,
+    "player_singles":          0.5,
+    "player_doubles":          0.5,
+    "player_stolen_bases":     0.5,
+    "player_hitter_strikeouts": 0.5,
+    "player_walks":            0.5,
+    "player_hits_runs_rbis":   1.5,
+}
 
 
-# ─── Fetch Batter Props ───────────────────────────────────────
+# ═════════════════════════════════════════
+# FETCHER
+# ═════════════════════════════════════════
 
-def get_mlb_batter_props():
+def get_batter_lines(
+    sport_key: str = SPORT_MLB,
+    markets: set = None,
+) -> dict:
     """
-    Fetch batter props — SportsData.io primary, Odds API fallback
-    Returns list of prop dicts
+    Pull batter prop lines from ParlayAPI.
+    Uses cached /props — no additional credits if pitcher model already ran.
+
+    Returns: aggregated dict keyed by (player, market_key)
+    Same structure as pitcher model aggregate_by_player() output.
     """
-    # 1. Try SportsData.io first (free, full coverage)
-    try:
-        from slipiq_sportsdata import get_batter_props as sd_batters
-        props = sd_batters()
-        if props:
-            batters = len(set(p["batter"] for p in props))
-            print(f"Batter props from SportsData.io: {batters} batters")
-            return props
-    except Exception as e:
-        print(f"SportsData.io batter props failed: {e}")
+    target_markets = markets or PRIMARY_MARKETS
 
-    # 2. Fallback to Odds API with cache
-    print("Falling back to Odds API for batter props...")
-    if not ODDS_API_KEY:
-        return []
+    raw_props = get_batter_props(sport_key)
 
-    try:
-        from slipiq_cache import get_events_cached, get_event_odds_cached
-    except Exception:
-        return []
+    # Filter to target markets only
+    filtered = [
+        p for p in raw_props
+        if p.get("market_key", "").lower() in target_markets
+    ]
 
-    events = get_events_cached(ODDS_API_KEY, BASE_URL)
-    if not events:
-        return []
+    # Filter minimum lines
+    filtered = [
+        p for p in filtered
+        if p.get("line") is not None and
+        p.get("line") >= MIN_LINES.get(p.get("market_key", ""), 0.5)
+    ]
 
-    print(f"Fetching batter props for {min(len(events), MAX_EVENTS)} games...")
-    props = []
+    if not filtered:
+        return {}
 
-    for event in events[:MAX_EVENTS]:
-        event_id = event["id"]
-        home = event["home_team"]
-        away = event["away_team"]
-
-        prop_data = get_event_odds_cached(
-            event_id,
-            ",".join(BATTER_MARKETS),
-            ODDS_API_KEY,
-            BASE_URL,
-        )
-        if not prop_data:
-            continue
-
-        bookmakers = prop_data.get("bookmakers", [])
-        if not bookmakers:
-            continue
-
-        preferred = None
-        for bm in bookmakers:
-            if bm["title"] in ("DraftKings", "FanDuel"):
-                preferred = bm
-                break
-        bookmaker = preferred or bookmakers[0]
-
-        for market in bookmaker.get("markets", []):
-            market_key = market["key"]
-            prop_type = MARKET_TO_PROP.get(market_key)
-            if not prop_type:
-                continue
-
-            for outcome in market["outcomes"]:
-                props.append({
-                    "batter": outcome["description"],
-                    "prop_type": prop_type,
-                    "line": outcome["point"],
-                    "direction": outcome["name"],
-                    "odds": outcome["price"],
-                    "home_team": home,
-                    "away_team": away,
-                    "bookmaker": bookmaker["title"],
-                })
-
-    return props
+    return aggregate_by_player(filtered)
 
 
-# ─── Curation Filter ──────────────────────────────────────────
-
-def passes_curation(prop_type, line, proj, confidence, games_analyzed):
-    """Strict curation — only keep meaningful edges"""
-    if games_analyzed < MIN_GAMES:
-        return False
-
-    edge = abs(proj - line)
-
-    if prop_type == "hits":
-        if line < 1.0 and proj > line:
-            return False
-        if line <= 0.5 and proj >= 0.35:
-            return False
-        if edge < 0.25:
-            return False
-        if confidence < 70:
-            return False
-
-    elif prop_type == "total_bases":
-        if edge < 0.35:
-            return False
-        if confidence < 65:
-            return False
-        if line <= 1.5 and proj > line and edge < 0.4:
-            return False
-
-    elif prop_type == "rbi":
-        if edge < 0.25:
-            return False
-        if confidence < 65:
-            return False
-        if proj < 0.05:
-            return False
-
-    elif prop_type == "runs":
-        if edge < 0.2:
-            return False
-        if confidence < 60:
-            return False
-
-    elif prop_type == "home_runs":
-        if edge < 0.15:
-            return False
-        if confidence < 60:
-            return False
-
-    return True
-
-
-# ─── Run Batter Analysis ──────────────────────────────────────
-
-def run_batter_analysis():
+def get_all_batter_lines(sport_key: str = SPORT_MLB) -> dict:
     """
-    Pull live batter lines + run model + curate
-    Output: tight list of high quality batter picks
+    Pull ALL batter markets — primary + secondary.
+    Returns: aggregated dict keyed by (player, market_key)
     """
-    print("\n=== SlipIQ Batter Props Analysis ===\n")
+    all_markets = PRIMARY_MARKETS | SECONDARY_MARKETS
+    return get_batter_lines(sport_key, markets=all_markets)
 
-    props = get_mlb_batter_props()
 
-    if not props:
-        print("No batter props available today")
-        return []
+# ═════════════════════════════════════════
+# PLAYER SUMMARY
+# ═════════════════════════════════════════
 
-    # Group by batter — collect all prop types
-    batter_props = {}
-    for prop in props:
-        if prop.get("direction") not in ("Over", "Over "):
-            continue
-        batter = prop.get("batter", prop.get("Name", ""))
-        if not batter:
-            continue
+def get_player_prop_summary(player_name: str, sport_key: str = SPORT_MLB) -> dict:
+    """
+    Get all available prop lines for a single player.
+    Useful for slip builder and pre-game alerts.
+    Returns dict of {market_key: aggregated_data}
+    """
+    all_lines = get_all_batter_lines(sport_key)
 
-        prop_type = prop.get("prop_type")
-        if not prop_type:
-            continue
-
-        if batter not in batter_props:
-            batter_props[batter] = {}
-
-        batter_props[batter][prop_type] = {
-            "line": prop["line"],
-            "bookmaker": prop.get("bookmaker", "SportsData"),
-            "home_team": prop.get("home_team", ""),
-            "away_team": prop.get("away_team", ""),
-        }
-
-    print(f"Found {len(batter_props)} batters with props")
-    print("Running models + curation...\n")
-
-    picks = []
-
-    for batter, prop_types in batter_props.items():
-        hits_line = prop_types.get("hits", {}).get("line")
-        tb_line = prop_types.get("total_bases", {}).get("line")
-        rbi_line = prop_types.get("rbi", {}).get("line")
-
-        profile = run_batter_model(
-            batter,
-            hits_line=hits_line,
-            tb_line=tb_line,
-            rbi_line=rbi_line,
-            verbose=False,
-        )
-
-        if not profile:
-            continue
-
-        games_analyzed = profile.get("games_analyzed", 0)
-
-        for prop_type, prop_data in prop_types.items():
-            line = prop_data["line"]
-
-            # Map prop type to profile key
-            proj_data = profile.get(prop_type)
-            if not proj_data:
-                continue
-
-            proj = proj_data["projection"]
-            confidence = proj_data["confidence"]
-
-            if not passes_curation(prop_type, line, proj, confidence, games_analyzed):
-                continue
-
-            rec = get_batter_recommendation(proj_data, line, prop_type)
-            if "PASS" in rec:
-                continue
-
-            direction = "OVER" if proj > line else "UNDER"
-            grade = rec.split("Grade: ")[-1].split(" |")[0].strip()
-
-            picks.append({
-                "batter": batter,
-                "prop_type": prop_type,
-                "line": line,
-                "projection": proj,
-                "recommendation": rec,
-                "confidence": confidence,
-                "season_avg": proj_data["season_avg"],
-                "last_3_avg": proj_data["last_3_avg"],
-                "last_5_avg": proj_data["last_5_avg"],
-                "games_analyzed": games_analyzed,
-                "direction": direction,
-                "grade": grade,
-                "bookmaker": prop_data["bookmaker"],
-                "home_team": prop_data.get("home_team", ""),
-                "away_team": prop_data.get("away_team", ""),
-            })
-
-    picks.sort(key=lambda x: x["confidence"], reverse=True)
-
-    # Print results
-    print("\n" + "="*50)
-    print("SlipIQ BATTER PICKS")
-    print("="*50)
-
-    prop_labels = {
-        "hits": "Hits",
-        "total_bases": "Total Bases",
-        "rbi": "RBI",
-        "runs": "Runs",
-        "home_runs": "Home Runs",
-        "batter_strikeouts": "Strikeouts",
+    player_props = {
+        market: data
+        for (player, market), data in all_lines.items()
+        if player.lower() == player_name.lower()
     }
 
-    if not picks:
-        print("No high confidence batter picks today")
-    else:
-        for i, pick in enumerate(picks, 1):
-            label = prop_labels.get(pick["prop_type"], pick["prop_type"])
-            direction = "OVER" if "OVER" in pick["recommendation"] else "UNDER"
-            print(f"\n#{i} {pick['batter']} — {label}")
-            print(f"  Pick:       {direction} {pick['line']}")
-            print(f"  Projection: {pick['projection']}")
-            print(f"  Season Avg: {pick['season_avg']}")
-            print(f"  Last 3:     {pick['last_3_avg']}")
-            print(f"  Games:      {pick['games_analyzed']}")
-            print(f"  Grade:      {pick['grade']}")
-            print(f"  Confidence: {pick['confidence']}%")
-            print(f"  Source:     {pick['bookmaker']}")
-
-    print(f"\nTotal curated batter picks: {len(picks)}")
-    return picks
+    return player_props
 
 
-# ─── Test ─────────────────────────────────────────────────────
+def get_todays_batters(sport_key: str = SPORT_MLB) -> list[str]:
+    """
+    Return list of unique batter names with lines today.
+    Used by batter model to know who to project.
+    """
+    lines = get_all_batter_lines(sport_key)
+    players = sorted(set(player for player, market in lines.keys()))
+    return players
+
+
+# ═════════════════════════════════════════
+# SLATE BUILDER
+# ═════════════════════════════════════════
+
+def build_batter_slate(sport_key: str = SPORT_MLB) -> dict:
+    """
+    Build full batter prop slate for today.
+    Groups by player, then by market.
+    Ready for batter model input.
+
+    Returns:
+    {
+        "player_name": {
+            "player_hits": {line, best_over, best_under, book_count, ...},
+            "player_total_bases": {...},
+            ...
+        }
+    }
+    """
+    all_lines = get_all_batter_lines(sport_key)
+
+    slate = defaultdict(dict)
+    for (player, market), data in all_lines.items():
+        slate[player][market] = {
+            "line":          data.get("line_consensus"),
+            "best_over":     data.get("best_over"),
+            "best_under":    data.get("best_under"),
+            "pinnacle":      data.get("pinnacle"),
+            "book_count":    data.get("book_count", 0),
+            "ev_over":       data.get("ev_over"),
+            "ev_under":      data.get("ev_under"),
+            "home_team":     data.get("home_team"),
+            "away_team":     data.get("away_team"),
+            "game_date":     data.get("game_date"),
+        }
+
+    return dict(slate)
+
+
+def get_high_value_batter_props(
+    min_books: int = 3,
+    ev_only: bool = False,
+    sport_key: str = SPORT_MLB,
+) -> list[dict]:
+    """
+    Filter batter props to high-value candidates only.
+
+    min_books: minimum books posting (market consensus)
+    ev_only: only return props with confirmed EV vs Pinnacle
+
+    Returns sorted list of prop dicts ready for model input.
+    """
+    all_lines = get_all_batter_lines(sport_key)
+
+    candidates = []
+    for (player, market), data in all_lines.items():
+        book_count  = data.get("book_count", 0)
+        ev_over     = data.get("ev_over")
+        ev_under    = data.get("ev_under")
+        ev_confirmed = (ev_over and ev_over > 0.02) or \
+                       (ev_under and ev_under > 0.02)
+
+        if book_count < min_books:
+            continue
+        if ev_only and not ev_confirmed:
+            continue
+
+        best_over  = data.get("best_over")
+        best_under = data.get("best_under")
+        pinnacle   = data.get("pinnacle")
+
+        candidates.append({
+            "player":      player,
+            "market":      market,
+            "line":        data.get("line_consensus"),
+            "book_count":  book_count,
+            "ev_over":     ev_over,
+            "ev_under":    ev_under,
+            "ev_confirmed": ev_confirmed,
+            "best_over":   best_over,
+            "best_under":  best_under,
+            "pinnacle":    pinnacle,
+            "home_team":   data.get("home_team"),
+            "away_team":   data.get("away_team"),
+            "game_date":   data.get("game_date"),
+        })
+
+    # Sort: EV confirmed first, then book count, then market priority
+    market_priority = {m: i for i, m in enumerate(PRIMARY_MARKETS)}
+    candidates.sort(key=lambda x: (
+        0 if x["ev_confirmed"] else 1,
+        -x["book_count"],
+        market_priority.get(x["market"], 99),
+    ))
+
+    return candidates
+
+
+# ═════════════════════════════════════════
+# CACHE SAVE
+# ═════════════════════════════════════════
+
+def save_batter_slate_cache(slate: dict):
+    """Save today's batter slate to cache for batter model."""
+    path = CACHE_DIR / f"batter_slate_{datetime.now().strftime('%Y%m%d')}.json"
+    with open(path, "w") as f:
+        json.dump(slate, f, indent=2, default=str)
+    print(f"  [cache] batter slate saved → {path.name}")
+    return path
+
+
+# ═════════════════════════════════════════
+# TEST
+# ═════════════════════════════════════════
 
 if __name__ == "__main__":
-    run_batter_analysis()
+    print("=" * 60)
+    print("SlipIQ — Batter Lines Test")
+    print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M AZ')}")
+    print("=" * 60)
+
+    # 1. Primary markets
+    print("\n[1] Primary batter prop lines...")
+    lines = get_batter_lines()
+    print(f"    {len(lines)} player/market combos found")
+
+    # Market breakdown
+    market_counts = defaultdict(int)
+    for (player, market) in lines.keys():
+        market_counts[market] += 1
+
+    print("\n    Markets posting:")
+    for market, count in sorted(market_counts.items()):
+        print(f"    {market:<35} {count} players")
+
+    # 2. Sample lines
+    if lines:
+        print("\n[2] Sample batter lines (first 5):")
+        for (player, market), data in list(lines.items())[:5]:
+            line       = data.get("line_consensus")
+            books      = data.get("book_count", 0)
+            pinnacle   = data.get("pinnacle")
+            best_over  = data.get("best_over")
+            ev         = data.get("ev_over")
+
+            print(f"\n  {player} — {market}")
+            print(f"    Line: {line} | Books: {books}")
+            if pinnacle:
+                print(f"    Pinnacle: {pinnacle.get('line')} "
+                      f"({pinnacle.get('over_price')} / {pinnacle.get('under_price')})")
+            if best_over:
+                print(f"    Best over: {best_over.get('over_price')} "
+                      f"@ {best_over.get('book_title')}")
+            if ev:
+                print(f"    EV: {ev:+.1%}")
+
+    # 3. High value props
+    print("\n[3] High value props (3+ books)...")
+    hv = get_high_value_batter_props(min_books=3)
+    print(f"    {len(hv)} props with 3+ books posting")
+
+    if hv:
+        print("\n    Top 5 by book count:")
+        for prop in hv[:5]:
+            ev_tag = "✅ +EV" if prop.get("ev_confirmed") else ""
+            print(f"    {prop['player']:<22} {prop['market']:<25} "
+                  f"Line: {prop['line']} | Books: {prop['book_count']} {ev_tag}")
+
+    # 4. Full slate
+    print("\n[4] Building full batter slate...")
+    slate = build_batter_slate()
+    print(f"    {len(slate)} players in today's slate")
+
+    save_batter_slate_cache(slate)
+
+    print("\n✓ Batter lines confirmed.")

@@ -10,7 +10,7 @@ import os
 from datetime import datetime, date
 
 CACHE_DIR = "cache"
-CACHE_HOURS = int(os.getenv("ODDS_CACHE_HOURS", "6"))  # 6 hours default
+from slipiq_env import ODDS_API_KEY, ODDS_CACHE_HOURS, ODDS_MAX_EVENTS
 
 
 # ─── Setup ────────────────────────────────────────────────────
@@ -43,7 +43,7 @@ def cache_get(key):
         cached_at = datetime.fromisoformat(data["cached_at"])
         age_hours = (datetime.now() - cached_at).total_seconds() / 3600
 
-        if age_hours > CACHE_HOURS:
+        if age_hours > ODDS_CACHE_HOURS:
             print(f"Cache expired for {key} ({age_hours:.1f}h old)")
             os.remove(path)
             return None
@@ -111,7 +111,7 @@ def cache_status():
             cached_at = datetime.fromisoformat(data["cached_at"])
             age_hours = (datetime.now() - cached_at).total_seconds() / 3600
             key = data.get("key", f.replace(".json", ""))
-            status = "✅ FRESH" if age_hours <= CACHE_HOURS else "❌ EXPIRED"
+            status = "✅ FRESH" if age_hours <= ODDS_CACHE_HOURS else "❌ EXPIRED"
             print(f"  {status} {key} ({age_hours:.1f}h old)")
         except Exception:
             print(f"  ⚠️ Unreadable: {f}")
@@ -146,37 +146,66 @@ def get_events_cached(odds_api_key, base_url):
         return []
 
 
-def get_event_odds_cached(event_id, markets, odds_api_key, base_url):
-    """Get odds for one event with caching"""
+def get_event_odds_cached(
+    event_id,
+    markets,
+    odds_api_key=None,
+    base_url=None,
+    bookmakers=None,
+):
+    """Get odds for one event with caching and Odds API key rotation."""
     import requests
 
+    from slipiq_env import ODDS_API_KEYS
+
+    base_url = base_url or "https://api.the-odds-api.com/v4"
     markets_key = "_".join(sorted(markets.split(",")))
-    cache_key = f"odds_{event_id}_{markets_key}_{date.today().isoformat()}"
+    bm_suffix = f"_{bookmakers}" if bookmakers else ""
+    cache_key = f"odds_{event_id}_{markets_key}{bm_suffix}_{date.today().isoformat()}"
     cached = cache_get(cache_key)
     if cached is not None:
         return cached
 
-    try:
-        r = requests.get(
-            f"{base_url}/sports/baseball_mlb/events/{event_id}/odds",
-            params={
-                "apiKey": odds_api_key,
+    keys = []
+    if odds_api_key:
+        keys.append(odds_api_key)
+    keys.extend(k for k in ODDS_API_KEYS if k not in keys)
+
+    for key in keys:
+        try:
+            params = {
+                "apiKey": key,
                 "regions": "us",
                 "markets": markets,
                 "oddsFormat": "american",
-            },
-            timeout=10,
-        )
-        if r.status_code != 200:
-            return None
+            }
+            if bookmakers:
+                params["bookmakers"] = bookmakers
 
-        data = r.json()
-        cache_set(cache_key, data)
-        return data
+            r = requests.get(
+                f"{base_url}/sports/baseball_mlb/events/{event_id}/odds",
+                params=params,
+                timeout=10,
+            )
+            if r.status_code == 401:
+                continue
+            if r.status_code != 200:
+                continue
 
-    except Exception as e:
-        print(f"Odds fetch error for {event_id}: {e}")
-        return None
+            data = r.json()
+            if not data.get("bookmakers"):
+                continue
+
+            cache_set(cache_key, data)
+            remaining = r.headers.get("x-requests-remaining", "?")
+            print(f"  [odds] event odds cached ({markets}, remaining={remaining})")
+            return data
+
+        except Exception as e:
+            print(f"Odds fetch error for {event_id}: {e}")
+            continue
+
+    return None
 
 
 # ─── Test ─────────────────────────────────────────────────────

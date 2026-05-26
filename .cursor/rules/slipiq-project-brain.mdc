@@ -1,0 +1,45 @@
+---
+description: SlipIQ master context — read PROJECT_BRAIN.md before changing any module
+globs: "**/*"
+alwaysApply: true
+---
+
+# SlipIQ — Project Brain (Cursor index)
+
+**Authoritative spec:** `PROJECT_BRAIN.md` (full architecture, schemas, immutable rules).  
+**Visual map:** `ARCHITECTURE_MAP.md`.  
+**Repo reality vs spec:** `REPO_INDEX.md` (updated when modules are added or renamed).
+
+## Before you code
+
+1. Read `PROJECT_BRAIN.md` sections 1–2 (pipeline + business rules) and section 6 (immutable rules).
+2. Check `REPO_INDEX.md` for whether a brain module exists under a different filename.
+3. Match existing module style: import config from `slipiq_env.py`, `# ─── Section ───` headers, `requests` + `timeout=10`, never bare `except`.
+
+## Immutable rules (never break)
+
+- Discord: **Bot Token + channel ID** only — no webhooks.
+- Confidence scoring: **Groq** (`slipiq_confidence_agent`) — not Anthropic.
+- Count stats (Ks, NBA points/reb): **negative binomial** — not normal.
+- Missing book line (e.g. F3 RL): **drop the leg** — never substitute another book/bet.
+- Pick cards: **DK | Fanatics | PrizePicks** only — Pinnacle is sharp reference, never on cards.
+- `SLIPIQ_TOP_PICKS`: if set, never cap below **5** picks.
+- Grades: use shared `slipiq_grading.calc_grade()` when that module exists; do not redefine thresholds in NBA files.
+
+## Active pipeline (actual entry point)
+
+`slipiq_orchestrator.py` → `run_pipeline()` (12:00 + 16:00 ET via `--schedule`).
+
+Current steps differ from brain §1 — see orchestrator docstring and `REPO_INDEX.md`.
+
+## Phase 1 gaps (build next)
+
+- `slipiq_player_ids.py` — ESPN/MLB ID table for batter matching
+- `slipiq_grading.py` — shared `calc_grade()` (brain spec; not in repo yet)
+- `slipiq_odds_api.py` — extract from `slipiq_lines.py` (`pull_all_lines`, F5/F3)
+- `slipiq_book_slip_builder.py` — per-book correlated slips
+- Wire broken imports: `slipiq_pitcher_props`, `enrich_picks` (see `REPO_INDEX.md`)
+
+## Env keys
+
+Use **`slipiq_env.py`** — same names as `.env.example` (`PARLAY_API_KEY`, `ODDS_API_KEY`/`ODDS_API_2`/`ODDS_API_3`, `DISCORD_DAILY_PICKS_CHANNEL`, `CHANNEL_TEAM_PARLAY`, `TOMORROW_IO_API_KEY`, etc.). Do not add new env names without updating `slipiq_env.py`.
