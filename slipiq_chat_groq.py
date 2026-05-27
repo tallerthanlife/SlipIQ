@@ -9,7 +9,7 @@ from pathlib import Path
 import requests
 
 from slipiq_env import (
-    GROQ_API_KEY,
+    GROQ_API_CHAT_KEY,
     GROQ_CHAT_MODEL,
     GROQ_VISION_MODEL,
 )
@@ -58,7 +58,7 @@ Use null for missing fields. Do not guess lines you cannot read."""
 
 def _groq_headers() -> dict:
     return {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Authorization": f"Bearer {GROQ_API_CHAT_KEY}",
         "Content-Type": "application/json",
     }
 
@@ -87,7 +87,7 @@ def call_groq_chat(
     model: str | None = None,
 ) -> str:
     """Multi-turn Groq chat. messages: [{role, content}, ...]."""
-    if not GROQ_API_KEY:
+    if not GROQ_API_CHAT_KEY:
         return ""
 
     payload = {
@@ -118,7 +118,7 @@ def parse_slip_intent(text: str) -> dict:
         "ev_only": True,
         "notes": text[:120],
     }
-    if not GROQ_API_KEY or not text.strip():
+    if not GROQ_API_CHAT_KEY or not text.strip():
         return default
 
     raw = call_groq_chat(
@@ -135,7 +135,7 @@ def parse_slip_intent(text: str) -> dict:
 def parse_screenshot(image_bytes: bytes, mime_type: str = "image/png") -> dict:
     """Vision OCR → ParsedLegs JSON via Groq Llama 4 Scout."""
     empty = {"sport": "unknown", "source": "unknown", "legs": []}
-    if not GROQ_API_KEY or not image_bytes:
+    if not GROQ_API_CHAT_KEY or not image_bytes:
         return empty
 
     b64 = base64.b64encode(image_bytes).decode("utf-8")
@@ -170,7 +170,7 @@ def parse_screenshot(image_bytes: bytes, mime_type: str = "image/png") -> dict:
 
 def summarize_slips(response: dict, user_context: str = "") -> str:
     """Short plain-text lead-in for Discord reply."""
-    if not GROQ_API_KEY:
+    if not GROQ_API_CHAT_KEY:
         mixed = response.get("mixed_slip") or {}
         grade = mixed.get("slip_grade", "?")
         score = mixed.get("slip_score", 0)
@@ -204,7 +204,7 @@ def refine_constraints(
 ) -> dict:
     """Use chat history to adjust builder constraints on follow-up."""
     default = dict(current_constraints)
-    if not GROQ_API_KEY:
+    if not GROQ_API_CHAT_KEY:
         return default
 
     prompt = f"""Given the conversation and new message, return JSON adjusting slip constraints:

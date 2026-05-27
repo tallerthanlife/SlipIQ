@@ -47,6 +47,8 @@ def _normalize_supabase_url(url: str) -> str:
 
 # ─── AI ───────────────────────────────────────────────────────
 GROQ_API_KEY = _get("GROQ_API_KEY")
+# Dedicated Groq key for slipiq_chat (falls back to GROQ_API_KEY if unset)
+GROQ_API_CHAT_KEY = _get("GROQ_API_CHAT_KEY", "GROQ_API_KEY")
 GROQ_CHAT_MODEL = _get("GROQ_CHAT_MODEL") or "llama-3.3-70b-versatile"
 GROQ_VISION_MODEL = _get("GROQ_VISION_MODEL") or "meta-llama/llama-4-scout-17b-16e-instruct"
 SLIPIQ_SKIP_AGENTIC = _get_bool("SLIPIQ_SKIP_AGENTIC", default=False)

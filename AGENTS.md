@@ -50,6 +50,7 @@ All config is read through **`slipiq_env.py`** — match the keys in `.env.examp
 | `DISCORD_SHARP_REVIEW_CHANNEL` | Post-game review (MLB + NBA) |
 | `CHANNEL_SLIPIQ_CHAT` | AI slip builder chat (`slipiq_chat.py`) |
 | `GROQ_CHAT_MODEL` / `GROQ_VISION_MODEL` | Groq models for chat + screenshot OCR |
+| `GROQ_API_CHAT_KEY` | Dedicated Groq key for `slipiq_chat.py` (falls back to `GROQ_API_KEY`) |
 | `SUPABASE_URL` / `SUPABASE_KEY` | Optional persistence (URL auto-strips `/rest/v1`) |
 
 ## Where to work next
