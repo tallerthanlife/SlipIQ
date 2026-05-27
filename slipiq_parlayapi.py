@@ -31,8 +31,11 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from statistics import mode
-from slipiq_env import ODDS_API_KEYS, PARLAY_API_KEY
+from dotenv import load_dotenv
 
+load_dotenv()
+
+PARLAY_API_KEY = os.getenv("PARLAY_API_KEY")
 BASE_URL = "https://parlay-api.com/v1"
 HEADERS = {"X-API-Key": PARLAY_API_KEY}
 
@@ -54,16 +57,41 @@ MARKET_BOOKS = {"draftkings", "fanduel", "betmgm", "caesars", "bet365",
                 "betrivers", "fanatics", "bovada", "pointsbet"}
 DFS_BOOKS    = {"prizepicks", "underdog"}
 
-# User-facing books only — Pinnacle is sharp reference, never on pick cards
-DISPLAY_BOOK_KEYS = ("draftkings", "fanatics", "prizepicks")
-DISPLAY_BOOK_LABELS = {
+# Books blocked by state — not available in Arizona
+AZ_BLOCKED_BOOKS = {"sleeper"}
+
+# Pick cards — DK / Fanatics / PrizePicks only (Pinnacle is sharp reference, never on cards)
+ACTION_BOOK_KEYS = ("draftkings", "fanatics", "prizepicks")
+ACTION_BOOK_LABELS = {
     "draftkings": "DK",
     "fanatics":   "Fanatics",
     "prizepicks": "PrizePicks",
 }
 
-# Books blocked by state — not available in Arizona
-AZ_BLOCKED_BOOKS = {"sleeper"}
+# Game-line display — broader AZ-available set (slipiq_game_lines.py)
+DISPLAY_BOOK_KEYS = [
+    "draftkings",
+    "fanduel",
+    "betmgm",
+    "caesars",
+    "bet365",
+    "fanatics",
+    "prizepicks",
+    "underdog",
+]
+
+DISPLAY_BOOK_LABELS = {
+    "draftkings":  "DK",
+    "fanduel":     "FD",
+    "betmgm":      "MGM",
+    "caesars":     "CZR",
+    "bet365":      "B365",
+    "fanatics":    "Fan",
+    "prizepicks":  "PP",
+    "underdog":    "UD",
+    "pinnacle":    "PIN",
+    "novig":       "NOV",
+}
 
 # ─────────────────────────────────────────
 # MARKET KEY GROUPS
@@ -97,6 +125,45 @@ BATTER_PROP_KEYS = {
     "player_total_bases_milestones",
     "player_home_runs_milestones",
     "player_rbis_milestones",
+}
+
+# ─────────────────────────────────────────
+# NBA MARKET KEY GROUPS
+# ─────────────────────────────────────────
+NBA_PRIMARY_PROP_KEYS = {
+    "player_points",
+    "player_rebounds",
+    "player_assists",
+    "player_points_rebounds_assists",
+    "player_points_+_rebounds_+_assists",
+    "player_threes",
+    "player_3_pointers_made",
+    "player_steals",
+    "player_blocks",
+    "player_steals_+_blocks",
+}
+
+NBA_HIGH_VARIANCE_PROP_KEYS = {
+    "player_threes",
+    "player_3_pointers_made",
+    "player_steals",
+    "player_blocks",
+    "player_steals_+_blocks",
+}
+
+NBA_PROP_KEYS = NBA_PRIMARY_PROP_KEYS
+
+NBA_PROP_LABELS = {
+    "player_points":                      "PTS",
+    "player_rebounds":                    "REB",
+    "player_assists":                     "AST",
+    "player_points_rebounds_assists":     "PRA",
+    "player_points_+_rebounds_+_assists": "PRA",
+    "player_threes":                      "3PM",
+    "player_3_pointers_made":             "3PM",
+    "player_steals":                      "STL",
+    "player_blocks":                      "BLK",
+    "player_steals_+_blocks":             "S+B",
 }
 
 _REJECT = {
@@ -230,26 +297,15 @@ def fetch_props_raw(sport_key: str = SPORT_MLB, force: bool = False) -> list[dic
             return cached
 
     print(f"  [API] /props {sport_key} — 3 credits")
-    try:
-        r = requests.get(
-            f"{BASE_URL}/sports/{sport_key}/props",
-            headers=HEADERS,
-            timeout=10,
-        )
-        r.raise_for_status()
-        data = r.json()
-        _cache_write(cache_key, data)
-        return data
-    except Exception as e:
-        print(f"  [API] /props failed: {e}")
-        stale = _cache_read(cache_key, max_age_minutes=99999)
-        if stale:
-            print(f"  [cache] using stale props ({len(stale)} entries)")
-            return stale
-        if ODDS_API_KEYS:
-            print(f"  [failsafe] ParlayAPI down — Odds API keys configured "
-                  f"({len(ODDS_API_KEYS)}); wire slipiq_odds_failsafe next")
-        return []
+    r = requests.get(
+        f"{BASE_URL}/sports/{sport_key}/props",
+        headers=HEADERS,
+        timeout=10
+    )
+    r.raise_for_status()
+    data = r.json()
+    _cache_write(cache_key, data)
+    return data
 
 
 def fetch_odds_raw(sport_key: str = SPORT_MLB, markets: list = None) -> list[dict]:
@@ -460,14 +516,7 @@ def _filter_props(raw: list[dict], market_keys: set) -> list[dict]:
 
 def get_pitcher_strikeout_props(sport_key: str = SPORT_MLB) -> list[dict]:
     raw = fetch_props_raw(sport_key)
-    props = _filter_props(raw, PITCHER_STRIKEOUT_KEYS)
-    if sport_key == SPORT_MLB and props:
-        try:
-            from slipiq_odds_supplement import supplement_pitcher_strikeout_props
-            props = supplement_pitcher_strikeout_props(props)
-        except Exception as e:
-            print(f"  [odds_supplement] skip: {e}")
-    return props
+    return _filter_props(raw, PITCHER_STRIKEOUT_KEYS)
 
 
 def get_pitcher_outs_props(sport_key: str = SPORT_MLB) -> list[dict]:
@@ -484,18 +533,22 @@ def get_batter_props(sport_key: str = SPORT_MLB, stat: str = None) -> list[dict]
 def get_all_props(sport_key: str = SPORT_MLB) -> dict:
     """Single 3-credit call returns all prop types."""
     raw = fetch_props_raw(sport_key)
-    k_props = _filter_props(raw, PITCHER_STRIKEOUT_KEYS)
-    if sport_key == SPORT_MLB and k_props:
-        try:
-            from slipiq_odds_supplement import supplement_pitcher_strikeout_props
-            k_props = supplement_pitcher_strikeout_props(k_props)
-        except Exception as e:
-            print(f"  [odds_supplement] skip: {e}")
     return {
-        "pitcher_strikeouts": k_props,
+        "pitcher_strikeouts": _filter_props(raw, PITCHER_STRIKEOUT_KEYS),
         "pitcher_outs":       _filter_props(raw, PITCHER_OUTS_KEYS),
         "batter_props":       _filter_props(raw, BATTER_PROP_KEYS),
     }
+
+
+def get_nba_player_props(sport_key: str = SPORT_NBA) -> list[dict]:
+    raw = fetch_props_raw(sport_key)
+    return _filter_props(raw, NBA_PROP_KEYS)
+
+
+def get_all_nba_props(sport_key: str = SPORT_NBA) -> dict:
+    """Single 3-credit call returns all NBA player prop types."""
+    raw = fetch_props_raw(sport_key)
+    return {"all": _filter_props(raw, NBA_PROP_KEYS)}
 
 
 # ═════════════════════════════════════════
@@ -509,7 +562,7 @@ def _entry_for_book(entries: list[dict], book_key: str) -> dict | None:
 def _display_book_entries(entries: list[dict]) -> list[dict]:
     return [
         _entry_for_book(entries, key)
-        for key in DISPLAY_BOOK_KEYS
+        for key in ACTION_BOOK_KEYS
         if _entry_for_book(entries, key)
     ]
 
@@ -531,11 +584,11 @@ def _best_action_side(entries: list[dict], side: str) -> dict | None:
 def build_books_display(entries: list[dict], direction: str) -> dict:
     """Per-book line/price for Discord cards — action books only."""
     out = {}
-    for key in DISPLAY_BOOK_KEYS:
+    for key in ACTION_BOOK_KEYS:
         ent = _entry_for_book(entries, key)
         if not ent:
             continue
-        label = DISPLAY_BOOK_LABELS.get(key, key)
+        label = ACTION_BOOK_LABELS.get(key, key)
         if direction == "over":
             price = ent.get("over_price")
             if price is None:
@@ -591,9 +644,7 @@ def _ev_vs_pinnacle(entries: list[dict], pinnacle: dict) -> tuple:
 
 
 def format_fallback_books_row(entries: list[dict], direction: str) -> str:
-    """
-    When DK/Fanatics/PP are absent, show the best available line (not Pinnacle).
-    """
+    """When DK/Fanatics/PP are absent, show the best available line (not Pinnacle)."""
     for ent in entries:
         book = (ent.get("book_title") or ent.get("book") or "").strip()
         if book.lower() in SHARP_BOOKS:
@@ -649,7 +700,7 @@ def aggregate_by_player(props: list[dict]) -> dict:
         display_lines = [
             e["line"] for e in entries
             if e.get("line") is not None
-            and e.get("book", "").lower() in DISPLAY_BOOK_KEYS
+            and e.get("book", "").lower() in ACTION_BOOK_KEYS
         ]
         all_lines = [e["line"] for e in entries if e["line"] is not None]
 
@@ -687,28 +738,28 @@ def aggregate_by_player(props: list[dict]) -> dict:
             )
 
         result[(player, market)] = {
-            "player":          player,
-            "market_key":      market,
-            "game_date":       entries[0].get("game_date"),
-            "home_team":       entries[0].get("home_team"),
-            "away_team":       entries[0].get("away_team"),
-            "pinnacle":        pinnacle,
-            "sharp_lines":     sharp,
-            "dfs_lines":       dfs,
-            "market_lines":    market_bk,
-            "all_lines":       all_lines,
-            "line_consensus":  consensus_line,
-            "sharp_line":      sharp_line,
-            "best_over":       best_over,
-            "best_under":      best_under,
+            "player":            player,
+            "market_key":        market,
+            "game_date":         entries[0].get("game_date"),
+            "home_team":         entries[0].get("home_team"),
+            "away_team":         entries[0].get("away_team"),
+            "pinnacle":          pinnacle,
+            "sharp_lines":       sharp,
+            "dfs_lines":         dfs,
+            "market_lines":      market_bk,
+            "all_lines":         all_lines,
+            "line_consensus":    consensus_line,
+            "sharp_line":        sharp_line,
+            "best_over":         best_over,
+            "best_under":        best_under,
             "book_count":        _action_book_count(entries),
             "action_book_count": _action_book_count(entries),
             "lines_book_count":  _lines_book_count(entries),
-            "ev_over":         ev_over,
-            "ev_under":        ev_under,
-            "fair_over_prob":  fair_over_prob,
-            "fair_under_prob": fair_under_prob,
-            "_entries":        entries,
+            "ev_over":           ev_over,
+            "ev_under":          ev_under,
+            "fair_over_prob":    fair_over_prob,
+            "fair_under_prob":   fair_under_prob,
+            "_entries":          entries,
         }
 
     return result

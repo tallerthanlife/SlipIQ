@@ -43,10 +43,13 @@ STATE_PATH = CACHE_DIR / "orchestrator_state.json"
 # AZ does not observe DST
 # ─────────────────────────────────────────
 SCHEDULE = {
-    "early":    "06:30",   # waiting message + first check
-    "main":     "08:30",   # full curation run
-    "confirm":  "09:15",   # force refresh + final picks
-    "review":   "23:00",   # sharp review post-game
+    "early":        "06:30",   # waiting message + first check
+    "main":         "08:30",   # full curation run
+    "confirm":      "09:15",   # force refresh + final picks
+    "nba_main":     "11:00",   # NBA daily pipeline
+    "nba_confirm":  "11:45",   # NBA line refresh
+    "nba_breakout": "16:30",   # injury-window breakout scan
+    "review":       "23:00",   # sharp review post-game
 }
 
 # How long to wait between scheduler loop ticks (seconds)
@@ -63,8 +66,12 @@ def load_state() -> dict:
             "early_done":   False,
             "main_done":    False,
             "confirm_done": False,
+            "nba_main_done":     False,
+            "nba_confirm_done":  False,
+            "nba_breakout_done": False,
             "review_done":  False,
             "picks_posted": 0,
+            "nba_picks_posted": 0,
             "last_run":     None,
         }
     with open(STATE_PATH) as f:
@@ -78,21 +85,49 @@ def save_state(state: dict):
 
 
 def reset_state_for_new_day(state: dict) -> dict:
-    """Reset daily flags when a new day starts."""
-    today = datetime.now().strftime("%Y-%m-%d")
-    if state.get("date") != today:
-        print(f"  [orchestrator] New day — resetting state for {today}")
-        return {
-            "date":         today,
-            "early_done":   False,
-            "main_done":    False,
-            "confirm_done": False,
-            "review_done":  False,
-            "picks_posted": 0,
-            "last_run":     None,
-        }
-    return state
+    """
+    Runs exactly once a day (usually on the first morning run).
+    Clears out yesterday's old API responses so we don't bet on stale lines,
+    but PROTECTS our historical results and tracking databases.
+    """
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    last_run = state.get("last_reset_date")
 
+    # 1. If we already reset today, do nothing. Keep using today's cache to save credits!
+    if last_run == today_str:
+        return state
+
+    print(f"\n  [cache] New day detected ({today_str}). Executing Master Cache Clear...")
+
+    # 2. Files we absolutely DO NOT want to delete (Your historical data)
+    protected_files = {
+        "slipiq_results.json",
+        "orchestrator_state.json",
+        "lines_db.json",
+        "line_value_log.json",
+        "alt_lines_log.json",
+        "record.json"
+    }
+
+    # 3. Nuke yesterday's slate so we are forced to pull fresh lines for free
+    deleted_count = 0
+    if CACHE_DIR.exists():
+        for file in CACHE_DIR.glob("*.json"):
+            if file.name not in protected_files:
+                try:
+                    file.unlink()  # Deletes the file
+                    deleted_count += 1
+                except Exception as e:
+                    print(f"  [cache] Could not delete {file.name}: {e}")
+
+    print(f"  [cache] Cleared {deleted_count} stale daily files. API Credits protected.")
+
+    # 4. Update the state so the bot knows today is a fresh day
+    state["last_reset_date"] = today_str
+    state["morning_run_done"] = False
+    state["confirm_run_done"] = False
+    
+    return state
 
 # ═════════════════════════════════════════
 # PIPELINE RUNNERS
@@ -131,7 +166,7 @@ def run_early(state: dict) -> dict:
 def run_main(state: dict, force_discord: bool = True) -> dict:
     """
     8:30am run — full curation pipeline.
-    Force prop refresh then post picks.
+    Now includes Pitcher, Batter, and Correlated SGP engines.
     """
     print("\n" + "═" * 60)
     print("ORCHESTRATOR — MAIN RUN (8:30am)")
@@ -139,26 +174,45 @@ def run_main(state: dict, force_discord: bool = True) -> dict:
     print("═" * 60)
 
     try:
-        from slipiq_parlayapi import fetch_props_raw, SPORT_MLB
-        # Main run = single paid /props pull for the day (3 credits)
+        # 1. Fresh Props Pull
+        from slipiq_parlayapi import fetch_props_raw, fetch_odds_raw, SPORT_MLB
         print("\n  [1] Refreshing prop lines (3 credits)...")
         fetch_props_raw(SPORT_MLB, force=True)
+        game_lines = fetch_odds_raw(SPORT_MLB) or []
 
+        # 2. Run Individual Curation
         from slipiq_curate import run_curation
-        print("  [2] Running full curation pipeline...")
-        result = run_curation(post_to_discord=force_discord)
+        print("  [2] Running individual curation pipeline...")
+        curation_result = run_curation(post_to_discord=force_discord)
 
-        picks_posted = result.get("post_count", 0)
+        # 3. Build & Post Correlated SGP Parlays (New!)
+        from slipiq_pitcher_model import run_pitcher_model
+        from slipiq_batter_model import run_batter_model
+        from slipiq_ml_parlay import build_ml_parlays, build_ml_parlay_embeds
+        from slipiq_discord import post_message, CHANNEL_TEAM_PARLAY
+
+        print("  [3] Building Correlated SGP Parlays...")
+        pitcher_picks = run_pitcher_model(min_confidence=60)
+        batter_picks = run_batter_model(min_confidence=60)
+        
+        ml_parlays = build_ml_parlays(pitcher_picks, game_lines, batter_picks)
+        
+        if ml_parlays and force_discord:
+            embeds = build_ml_parlay_embeds(ml_parlays)
+            for embed in embeds:
+                post_message(CHANNEL_TEAM_PARLAY, embed=embed)
+                print("  [parlay] Posted correlated slip to Discord")
+
+        picks_posted = curation_result.get("post_count", 0)
         state["main_done"]    = True
         state["picks_posted"] = picks_posted
 
-        print(f"\n  ✅ Main run complete — {picks_posted} picks posted")
+        print(f"\n  ✅ Main run complete — {picks_posted} picks + SGP parlays posted")
 
     except Exception as e:
         print(f"\n  ❌ Main run error: {e}")
 
     return state
-
 
 def run_confirm(state: dict) -> dict:
     """
@@ -196,6 +250,62 @@ def run_confirm(state: dict) -> dict:
     return state
 
 
+def run_nba_main(state: dict, force_discord: bool = True) -> dict:
+    """11:00am AZ — full NBA pipeline."""
+    print("\n" + "═" * 60)
+    print("ORCHESTRATOR — NBA MAIN RUN (11:00am)")
+    print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M AZ')}")
+    print("═" * 60)
+
+    try:
+        from slipiq_nba_orchestrator import run_nba_pipeline
+        result = run_nba_pipeline(post_to_discord=force_discord, include_breakout=True)
+        state["nba_main_done"] = True
+        state["nba_picks_posted"] = result.get("post_count", 0)
+        print(f"\n  ✅ NBA main run complete — {state['nba_picks_posted']} picks posted")
+    except Exception as e:
+        print(f"\n  ❌ NBA main run error: {e}")
+
+    return state
+
+
+def run_nba_confirm_run(state: dict) -> dict:
+    """11:45am AZ — NBA confirm / line refresh."""
+    print("\n" + "═" * 60)
+    print("ORCHESTRATOR — NBA CONFIRM RUN (11:45am)")
+    print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M AZ')}")
+    print("═" * 60)
+
+    try:
+        from slipiq_nba_orchestrator import run_nba_confirm
+        result = run_nba_confirm(post_to_discord=True)
+        state["nba_confirm_done"] = True
+        state["nba_picks_posted"] = state.get("nba_picks_posted", 0) + result.get("post_count", 0)
+        print(f"\n  ✅ NBA confirm complete")
+    except Exception as e:
+        print(f"\n  ❌ NBA confirm error: {e}")
+
+    return state
+
+
+def run_nba_breakout(state: dict) -> dict:
+    """4:30pm AZ — injury-window breakout scan."""
+    print("\n" + "═" * 60)
+    print("ORCHESTRATOR — NBA BREAKOUT (4:30pm)")
+    print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M AZ')}")
+    print("═" * 60)
+
+    try:
+        from slipiq_nba_orchestrator import run_breakout_check
+        n = len(run_breakout_check(post_alerts=True))
+        state["nba_breakout_done"] = True
+        print(f"\n  ✅ Breakout scan complete — {n} alert(s)")
+    except Exception as e:
+        print(f"\n  ❌ Breakout scan error: {e}")
+
+    return state
+
+
 def run_review(state: dict) -> dict:
     """
     11pm run — Sharp Review.
@@ -209,12 +319,13 @@ def run_review(state: dict) -> dict:
     try:
         today = datetime.now().strftime("%Y-%m-%d")
 
-        from slipiq_sharp_review import run_sharp_review
+        from slipiq_sharp_review import run_all_sharp_reviews
         print(f"\n  Running Sharp Review for {today}...")
-        results = run_sharp_review(
+        review_out = run_all_sharp_reviews(
             game_date=today,
-            post_to_discord=True
+            post_to_discord=True,
         )
+        results = review_out.get("mlb", []) + review_out.get("nba", [])
 
         state["review_done"] = True
         print(f"\n  ✅ Sharp Review complete — {len(results)} picks graded")
@@ -288,6 +399,24 @@ def run_scheduler():
                 state = run_confirm(state)
                 save_state(state)
 
+            # NBA main — 11:00am
+            elif should_run(SCHEDULE["nba_main"], state.get("nba_main_done", False)):
+                print(f"\n[{now_str}] Firing NBA main run...")
+                state = run_nba_main(state)
+                save_state(state)
+
+            # NBA confirm — 11:45am
+            elif should_run(SCHEDULE["nba_confirm"], state.get("nba_confirm_done", False)):
+                print(f"\n[{now_str}] Firing NBA confirm run...")
+                state = run_nba_confirm_run(state)
+                save_state(state)
+
+            # NBA breakout — 4:30pm
+            elif should_run(SCHEDULE["nba_breakout"], state.get("nba_breakout_done", False)):
+                print(f"\n[{now_str}] Firing NBA breakout scan...")
+                state = run_nba_breakout(state)
+                save_state(state)
+
             # Sharp Review — 11pm
             elif should_run(SCHEDULE["review"], state["review_done"]):
                 print(f"\n[{now_str}] Firing sharp review...")
@@ -332,9 +461,21 @@ def show_status():
     print(f"  Early (6:30am)  : {'✅ Done' if state.get('early_done') else '⏳ Pending'}")
     print(f"  Main (8:30am)   : {'✅ Done' if state.get('main_done') else '⏳ Pending'}")
     print(f"  Confirm (9:15am): {'✅ Done' if state.get('confirm_done') else '⏳ Pending'}")
+    print(f"  NBA Main (11:00) : {'✅ Done' if state.get('nba_main_done') else '⏳ Pending'}")
+    print(f"  NBA Confirm(11:45): {'✅ Done' if state.get('nba_confirm_done') else '⏳ Pending'}")
+    print(f"  NBA Breakout(4:30): {'✅ Done' if state.get('nba_breakout_done') else '⏳ Pending'}")
     print(f"  Review (11pm)   : {'✅ Done' if state.get('review_done') else '⏳ Pending'}")
-    print(f"  Picks posted    : {state.get('picks_posted', 0)}")
+    print(f"  MLB picks posted: {state.get('picks_posted', 0)}")
+    print(f"  NBA picks posted: {state.get('nba_picks_posted', 0)}")
     print(f"  Last run        : {state.get('last_run', 'Never')}")
+
+    try:
+        from slipiq_env import discord_channels_status
+        ch = discord_channels_status()
+        print(f"\n  Discord channels:")
+        print(f"  Basketball props: {'✅' if ch.get('basketball') else '❌ CHANNEL_BASKETBALL_PROPS'}")
+    except Exception:
+        pass
 
     if record_path.exists():
         with open(record_path) as f:
@@ -381,6 +522,12 @@ if __name__ == "__main__":
     elif "--review" in args:
         state = load_state()
         state = run_review(state)
+        save_state(state)
+
+    elif "--nba" in args:
+        state = load_state()
+        state = reset_state_for_new_day(state)
+        state = run_nba_main(state, force_discord="--no-discord" not in args)
         save_state(state)
 
     elif "--morning" in args or "--force" in args:

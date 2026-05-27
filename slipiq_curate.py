@@ -54,7 +54,7 @@ GRADE_BONUS = {
 # ─────────────────────────────────────────
 # HOW MANY PICKS TO POST
 # ─────────────────────────────────────────
-MAX_DAILY_POSTS = 3   # cap at 3 picks per day — quality over quantity
+MAX_DAILY_POSTS = 7   # cap at 7 picks per day — quality over quantity
 
 
 # ═════════════════════════════════════════
@@ -63,37 +63,42 @@ MAX_DAILY_POSTS = 3   # cap at 3 picks per day — quality over quantity
 
 def curation_score(card: dict) -> float:
     """
-    Score a pick card for curation ranking.
-    Higher = stronger candidate for daily best pick.
-
-    Factors:
-      - Confidence (0-100)
-      - Grade bonus
-      - Edge magnitude (projection vs line diff)
-      - EV confirmation bonus
-      - Book count bonus (market consensus)
-      - Trend alignment bonus
+    Calculates the true value of a pick for the morning slate.
+    Rewards High Confidence + Positive EV. Penalizes heavy juice.
     """
-    confidence  = card.get("confidence", 0)
-    grade       = card.get("grade", "D")
-    diff        = abs(card.get("diff", 0))
-    ev_conf     = card.get("ev_confirmed", False)
-    book_count  = card.get("book_count", 0)
-    trend       = card.get("trend", "flat")
-    direction   = card.get("direction", "")
+    confidence = card.get("confidence", 0)
+    ev_value = card.get("ev_value", 0) or 0  
+    book_count = card.get("book_count", 0)
+    best_book = card.get("best_book", {})
 
-    grade_pts   = GRADE_BONUS.get(grade, 0)
-    edge_pts    = diff * 3                        # 3 pts per K of edge
-    ev_pts      = 15 if ev_conf else 0            # big bonus for confirmed EV
-    book_pts    = min(book_count * 2, 12)         # 2 pts per book, max 12
+    # 1. Base Score from Model Confidence
+    score = float(confidence)
 
-    # Trend alignment bonus — trend agrees with signal
-    trend_aligned = (trend == "hot" and direction == "over") or \
-                    (trend == "cold" and direction == "under")
-    trend_pts   = 5 if trend_aligned else 0
+    # 2. Expected Value (+EV) Bonus
+    # Heavily weight picks where the market is underpricing the line
+    if ev_value > 0:
+        score += (ev_value * 100) * 2.5  
+    else:
+        score -= 5.0
 
-    return confidence + grade_pts + edge_pts + ev_pts + book_pts + trend_pts
+    # 3. Market Consensus Bonus
+    # A line posted across 3+ books is statistically safer
+    if book_count >= 3:
+        score += 5.0
+    else:
+        score -= 2.0
 
+    # 4. Juice Penalty (Avoid terrible payouts)
+    price = -110
+    if isinstance(best_book, dict) and "price" in best_book:
+        price = best_book.get("price", -110)
+        
+    if price < -160:
+        score -= 15.0  # Massive penalty for terrible odds
+    elif price > 100:
+        score += 8.0   # Bonus for underdog / plus-money payouts
+
+    return round(score, 1)
 
 # ═════════════════════════════════════════
 # PICK SELECTOR

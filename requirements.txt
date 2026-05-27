@@ -13,3 +13,5 @@ python-Levenshtein
 aiohttp
 schedule
 tzdata
+nba_api
+scipy

@@ -47,6 +47,8 @@ def _normalize_supabase_url(url: str) -> str:
 
 # ─── AI ───────────────────────────────────────────────────────
 GROQ_API_KEY = _get("GROQ_API_KEY")
+GROQ_CHAT_MODEL = _get("GROQ_CHAT_MODEL") or "llama-3.3-70b-versatile"
+GROQ_VISION_MODEL = _get("GROQ_VISION_MODEL") or "meta-llama/llama-4-scout-17b-16e-instruct"
 SLIPIQ_SKIP_AGENTIC = _get_bool("SLIPIQ_SKIP_AGENTIC", default=False)
 
 # ─── Odds / lines (failsafe chain per bot architecture) ───────
@@ -91,6 +93,8 @@ DISCORD_SHARP_REVIEW_CHANNEL = _get(
     "CHANNEL_SHARP_REVIEW",
 )
 
+CHANNEL_SLIPIQ_CHAT = _get("CHANNEL_SLIPIQ_CHAT")
+
 # ─── Pipeline tuning (optional — safe defaults if omitted) ────
 SLIPIQ_TOP_PICKS = _get_int("SLIPIQ_TOP_PICKS", 0)
 SLIPIQ_PARLAY_MIN_CONF = _get_int("SLIPIQ_PARLAY_MIN_CONF", 68)
@@ -103,6 +107,11 @@ SLIP_MIN_MODEL_CONF = float(_get("SLIP_MIN_MODEL_CONF") or "60")
 SLIP_MIN_DISPLAY_CONF = float(_get("SLIP_MIN_DISPLAY_CONF") or "58")
 SLIP_MIN_TRACK_RECORD = float(_get("SLIP_MIN_TRACK_RECORD") or "50")
 
+SLIP_CHAT_MIN_CONF = _get_int("SLIP_CHAT_MIN_CONF", 65)
+SLIP_CHAT_MIN_EV = float(_get("SLIP_CHAT_MIN_EV") or "0.02")
+SLIP_CHAT_SESSION_TTL_MIN = _get_int("SLIP_CHAT_SESSION_TTL_MIN", 30)
+SLIP_CHAT_USER_COOLDOWN_SEC = _get_int("SLIP_CHAT_USER_COOLDOWN_SEC", 10)
+
 
 def discord_channels_status() -> dict:
     """Quick check for orchestrator / --status."""
@@ -112,4 +121,5 @@ def discord_channels_status() -> dict:
         "live_alerts":    bool(DISCORD_LIVE_ALERTS_CHANNEL),
         "sharp_review":   bool(DISCORD_SHARP_REVIEW_CHANNEL),
         "basketball":     bool(CHANNEL_BASKETBALL_PROPS),
+        "slipiq_chat":    bool(CHANNEL_SLIPIQ_CHAT),
     }

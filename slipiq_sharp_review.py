@@ -31,24 +31,34 @@ import pybaseball as pyb
 import pandas as pd
 
 from slipiq_discord import post_sharp_review, post_message
-from slipiq_parlayapi import fetch_historical, SPORT_MLB
+from slipiq_parlayapi import fetch_historical, SPORT_MLB, SPORT_NBA
 
 from slipiq_env import DISCORD_SHARP_REVIEW_CHANNEL
 
 CACHE_DIR  = Path("cache")
 CACHE_DIR.mkdir(exist_ok=True)
 
-RECORD_PATH  = CACHE_DIR / "record.json"
-PICKS_PATH   = CACHE_DIR / "latest_picks.json"
+RECORD_PATH     = CACHE_DIR / "record.json"
+NBA_RECORD_PATH = CACHE_DIR / "nba_record.json"
+PICKS_PATH      = CACHE_DIR / "latest_picks.json"
+NBA_PICKS_PATH  = CACHE_DIR / "nba_latest_picks.json"
+
+NBA_STAT_KEYS = {
+    "points":   "pts",
+    "rebounds": "reb",
+    "assists":  "ast",
+    "pra":      "pra",
+    "threes":   "fg3m",
+}
 
 
 # ═════════════════════════════════════════
 # RECORD MANAGER
 # ═════════════════════════════════════════
 
-def load_record() -> dict:
+def load_record(path: Path = RECORD_PATH) -> dict:
     """Load cumulative record from cache."""
-    if not RECORD_PATH.exists():
+    if not path.exists():
         return {
             "total":       0,
             "hits":        0,
@@ -62,14 +72,14 @@ def load_record() -> dict:
             "last_updated": None,
             "history":     [],
         }
-    with open(RECORD_PATH) as f:
+    with open(path) as f:
         return json.load(f)
 
 
-def save_record(record: dict):
+def save_record(record: dict, path: Path = RECORD_PATH):
     """Save cumulative record to cache."""
     record["last_updated"] = datetime.now().isoformat()
-    with open(RECORD_PATH, "w") as f:
+    with open(path, "w") as f:
         json.dump(record, f, indent=2, default=str)
 
 
@@ -180,13 +190,46 @@ def fetch_pitcher_actual_ks(player_name: str, game_date: str) -> int | None:
         return None
 
 
-def fetch_closing_line(player_name: str, market_key: str, game_date: str) -> float | None:
+def fetch_nba_actual_stat(
+    player_name: str,
+    game_date: str,
+    prop_type: str = "points",
+) -> float | None:
+    """Fetch actual stat total from nba_api game log for grading."""
+    try:
+        from slipiq_nba_data import find_player_id, get_player_game_log, current_season
+
+        player_id = find_player_id(player_name)
+        if not player_id:
+            print(f"  [sharp-nba] Player not found: {player_name}")
+            return None
+
+        games = get_player_game_log(player_id, n=15, season=current_season())
+        target = game_date[:10]
+        for g in games:
+            gd = str(g.get("game_date", ""))[:10]
+            if gd != target:
+                continue
+            if prop_type == "pra":
+                return float(g["pts"] + g["reb"] + g["ast"])
+            key = NBA_STAT_KEYS.get(prop_type, "pts")
+            return float(g.get(key, 0))
+
+        print(f"  [sharp-nba] No box score for {player_name} on {game_date}")
+        return None
+
+    except Exception as e:
+        print(f"  [sharp-nba] Error fetching {player_name}: {e}")
+        return None
+
+
+def fetch_closing_line(player_name: str, market_key: str, game_date: str, sport_key: str = SPORT_MLB) -> float | None:
     """
     Fetch closing line from ParlayAPI historical endpoint.
     Used for CLV calculation.
     """
     try:
-        historical = fetch_historical(SPORT_MLB, date=game_date)
+        historical = fetch_historical(sport_key, date=game_date)
         if not historical:
             return None
 
@@ -295,15 +338,152 @@ def grade_pick(card: dict, actual_ks: int, closing_line: float = None) -> dict:
     }
 
 
+def grade_nba_pick(card: dict, actual: float, closing_line: float = None) -> dict:
+    """Grade NBA prop pick (points/reb/ast/PRA)."""
+    player = card.get("player")
+    line = card.get("line")
+    direction = card.get("direction", "")
+    proj = card.get("projection")
+    prop_type = card.get("prop_type", "points")
+    grade = card.get("grade", "?")
+
+    if direction == "over":
+        if actual > line:
+            outcome, hit, push = "HIT", True, False
+        elif actual == line:
+            outcome, hit, push = "PUSH", False, True
+        else:
+            outcome, hit, push = "MISS", False, False
+    else:
+        if actual < line:
+            outcome, hit, push = "HIT", True, False
+        elif actual == line:
+            outcome, hit, push = "PUSH", False, True
+        else:
+            outcome, hit, push = "MISS", False, False
+
+    proj_error = round(abs(actual - proj), 2) if proj else None
+    clv = None
+    if closing_line is not None and line is not None:
+        if direction == "over":
+            clv = round(line - closing_line, 2)
+        else:
+            clv = round(closing_line - line, 2)
+
+    if outcome == "HIT" and clv and clv > 0:
+        sr_grade = "A"
+    elif outcome == "HIT":
+        sr_grade = "B"
+    elif outcome == "PUSH":
+        sr_grade = "C"
+    elif outcome == "MISS" and clv and clv > 0:
+        sr_grade = "B-"
+    else:
+        sr_grade = "D"
+
+    stat_label = prop_type.upper()
+    return {
+        "sport":       "nba",
+        "player":      player,
+        "line":        line,
+        "direction":   direction,
+        "prop_type":   prop_type,
+        "actual_stat": actual,
+        "actual_ks":   actual,  # compat with post_sharp_review embed
+        "proj":        proj,
+        "outcome":     outcome,
+        "hit":         hit,
+        "push":        push,
+        "clv":         clv,
+        "proj_error":  proj_error,
+        "sr_grade":    sr_grade,
+        "model_grade": grade,
+        "roi":         1.0 if hit else (-1.0 if not push else 0.0),
+        "stat_label":  stat_label,
+    }
+
+
 # ═════════════════════════════════════════
 # SHARP REVIEW RUNNER
 # ═════════════════════════════════════════
 
-def run_sharp_review(game_date: str = None, post_to_discord: bool = True) -> list[dict]:
+def run_nba_sharp_review(game_date: str = None, post_to_discord: bool = True) -> list[dict]:
+    """Grade NBA picks from cache/nba_latest_picks.json."""
+    if not game_date:
+        game_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    print("\n" + "=" * 60)
+    print("SlipIQ NBA Sharp Review")
+    print(f"Grading: {game_date}")
+    print("=" * 60)
+
+    date_log = CACHE_DIR / f"nba_slate_{game_date.replace('-', '')}.json"
+    if date_log.exists():
+        with open(date_log) as f:
+            slate_log = json.load(f)
+    elif NBA_PICKS_PATH.exists():
+        with open(NBA_PICKS_PATH) as f:
+            slate_log = json.load(f)
+    else:
+        print("  No NBA picks found to grade.")
+        return []
+
+    top_picks = slate_log.get("top_picks", [])
+    if not top_picks:
+        print("  No NBA picks were posted.")
+        return []
+
+    record = load_record(NBA_RECORD_PATH)
+    results = []
+
+    for card in top_picks:
+        player = card.get("player")
+        prop_type = card.get("prop_type", "points")
+        market_key = card.get("market_key", f"player_{prop_type}")
+        print(f"\n  🏀 [{card.get('grade')}] {player} — {card.get('prop_label', prop_type)}")
+
+        actual = fetch_nba_actual_stat(player, game_date, prop_type)
+        if actual is None:
+            continue
+
+        closing_line = fetch_closing_line(player, market_key, game_date, sport_key=SPORT_NBA)
+        result = grade_nba_pick(card, actual, closing_line)
+        results.append(result)
+        record = update_record(record, result)
+        print(f"  Result : {result['outcome']} ({actual} vs {card.get('line')} line)")
+
+        if post_to_discord and DISCORD_SHARP_REVIEW_CHANNEL:
+            post_message(
+                DISCORD_SHARP_REVIEW_CHANNEL,
+                content=f"🏀 **NBA Sharp Review** — {player}",
+            )
+            post_sharp_review(
+                player=player,
+                pick_direction=card.get("direction"),
+                line=card.get("line"),
+                actual_ks=int(actual) if actual == int(actual) else actual,
+                proj=card.get("projection"),
+                grade=result["sr_grade"],
+                clv=result.get("clv"),
+                book=(card.get("best_book") or {}).get("book"),
+                book_price=(card.get("best_book") or {}).get("price"),
+                closing_price=int(closing_line) if closing_line else None,
+            )
+
+    save_record(record, NBA_RECORD_PATH)
+    if results:
+        _print_summary(results, record)
+    return results
+
+
+def run_sharp_review(game_date: str = None, post_to_discord: bool = True, sport: str = "mlb") -> list[dict]:
     """
     Full Sharp Review pipeline for a given date.
-    Defaults to yesterday's picks.
+    Defaults to yesterday's picks. sport='nba' grades basketball only.
     """
+    if sport == "nba":
+        return run_nba_sharp_review(game_date=game_date, post_to_discord=post_to_discord)
+
     if not game_date:
         game_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
@@ -398,6 +578,13 @@ def run_sharp_review(game_date: str = None, post_to_discord: bool = True) -> lis
     return results
 
 
+def run_all_sharp_reviews(game_date: str = None, post_to_discord: bool = True) -> dict:
+    """Grade both MLB and NBA picks for the given date."""
+    mlb = run_sharp_review(game_date=game_date, post_to_discord=post_to_discord, sport="mlb")
+    nba = run_nba_sharp_review(game_date=game_date, post_to_discord=post_to_discord)
+    return {"mlb": mlb, "nba": nba}
+
+
 # ═════════════════════════════════════════
 # SUMMARY BUILDERS
 # ═════════════════════════════════════════
@@ -480,15 +667,24 @@ def _post_summary_to_discord(results: list[dict], record: dict, game_date: str):
 if __name__ == "__main__":
     import sys
 
-    # Pass a date to grade a specific day: python slipiq_sharp_review.py 2026-05-25
-    # Default: yesterday
-    date_arg    = next((a for a in sys.argv[1:] if a.startswith("20")), None)
-    no_discord  = "--no-discord" in sys.argv
-
-    results = run_sharp_review(
-        game_date      = date_arg,
-        post_to_discord = not no_discord,
+    date_arg = next((a for a in sys.argv[1:] if a.startswith("20")), None)
+    no_discord = "--no-discord" in sys.argv
+    sport = "nba" if "--sport" in sys.argv and "nba" in sys.argv else (
+        "nba" if sys.argv[-1] == "nba" else "mlb"
     )
+    if "--sport" in sys.argv:
+        idx = sys.argv.index("--sport")
+        if idx + 1 < len(sys.argv):
+            sport = sys.argv[idx + 1].lower()
+
+    if sport == "all":
+        results = run_all_sharp_reviews(game_date=date_arg, post_to_discord=not no_discord)
+    else:
+        results = run_sharp_review(
+            game_date=date_arg,
+            post_to_discord=not no_discord,
+            sport=sport,
+        )
 
     if not results:
         print("\n  No results to display.")

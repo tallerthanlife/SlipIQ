@@ -242,7 +242,16 @@ def get_batter_recent_form(player_name: str, n_games: int = 10) -> dict:
 
     except Exception as e:
         print(f"  [error] {player_name}: {e}")
-        return {"player": player_name, "error": str(e)}
+        # THE FIX: Save a flat baseline to cache so we don't infinitely retry a blocked player
+        error_result = {
+            "player": player_name, 
+            "error": str(e), 
+            "trend": "flat",
+            "n_games": 0
+        }
+        with open(cache_path, "w") as f:
+            json.dump(error_result, f)
+        return error_result
 
 
 # ═════════════════════════════════════════
@@ -451,7 +460,8 @@ def build_batter_pick_card(
     conf  = score_batter_confidence(proj, edge, book_count)
 
     direction = edge.get("direction", "")
-    best_book = None
+    # THE FIX: Default to an empty dictionary to prevent NoneType crash downstream
+    best_book = {}
 
     if direction == "over" and best_over:
         price = best_over.get("over_price", 0)
