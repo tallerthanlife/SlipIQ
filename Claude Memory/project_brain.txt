@@ -1,0 +1,29 @@
+# SlipIQ — Cursor index (May 26, 2026)
+
+Full spec: PROJECT_BRAIN.md (same folder + slipiq repo root)
+Repo delta: REPO_INDEX.md
+Cursor rule: slipiq/.cursor/rules/slipiq-project-brain.mdc
+Agent entry: slipiq/AGENTS.md
+
+Founder: Jonathan Wilson | Repo: C:\Users\jonkw\Desktop\slipiq
+
+## Active stack
+Python 3, Railway, APScheduler (12:00 + 16:00 ET), discord.py Bot Token, Groq confidence, Odds API, pybaseball/statsapi, Supabase via slipiq_db.py (partial)
+
+## Entry point
+slipiq_orchestrator.py → run_pipeline() — 9 steps (settle, games, pitcher props, slip review, curate, brief, batters, parlays, Discord)
+
+## Brain vs repo (critical)
+- slipiq_pitcher_props.py MISSING — orchestrator imports it; use slipiq_lines.run_full_analysis
+- enrich_picks MISSING in confidence_agent — slipiq_lines imports it
+- slipiq_grading.py, slipiq_odds_api.py, slipiq_book_slip_builder.py NOT built yet
+- Sharp review = slipiq_sharp_review_agent.py + slipiq_results.py (not slipiq_sharp_review.py)
+
+## Immutable rules
+Bot token only | Groq for confidence | Neg binomial for counts | No line substitution | DK|Fanatics|FD columns | min 5 picks if TOP_PICKS set
+
+## Next build (Phase 1)
+slipiq_player_ids.py, slipiq_grading.py, extract slipiq_odds_api, slipiq_book_slip_builder, fix broken imports
+
+## NBA
+October 2026 — files not in repo; see PROJECT_BRAIN.md §5
