@@ -32,13 +32,10 @@ alwaysApply: true
 
 Current steps differ from brain §1 — see orchestrator docstring and `REPO_INDEX.md`.
 
-## Phase 1 gaps (build next)
-
-- `slipiq_player_ids.py` — ESPN/MLB ID table for batter matching
-- `slipiq_grading.py` — shared `calc_grade()` (brain spec; not in repo yet)
-- `slipiq_odds_api.py` — extract from `slipiq_lines.py` (`pull_all_lines`, F5/F3)
-- `slipiq_book_slip_builder.py` — per-book correlated slips
-- Wire broken imports: `slipiq_pitcher_props`, `enrich_picks` (see `REPO_INDEX.md`)
+## Current build status
+Phase 1 complete. All modules built and deployed.
+Next: dry run (python slipiq_orchestrator.py --no-discord)
+then supabase_schema_update.sql in Supabase dashboard.
 
 ## Env keys
 

@@ -750,32 +750,35 @@ Phase 1 (ACTIVE — MLB Summer 2026):
   ✅ slipiq_mlb_data.py
   ✅ slipiq_pitcher_model.py
   ✅ slipiq_batter_model.py
-  ✅ slipiq_odds_api.py
   ✅ slipiq_curate.py
-  ✅ slipiq_confidence_agent.py (Groq)
-  ✅ slipiq_lines.py
+  ✅ slipiq_confidence_agent.py (Groq — ev_engine wired)
+  ✅ slipiq_lines.py (delegation shim)
   ✅ slipiq_book_slip_builder.py
   ✅ slipiq_discord.py
   ✅ slipiq_sharp_review.py
-  ✅ slipiq_orchestrator.py
+  ✅ slipiq_orchestrator.py (all crash bugs fixed)
   ✅ slipiq_grading.py
-  ✅ slipiq_normalization.py
-  ✅ slipiq_pinnacle_props.py
-  ✅ slipiq_player_ids.py — static ESPN + MLB ID table, normalize_name, fuzzy_match, is_batter_on_team
-  ✅ slipiq_ev_engine.py — assess_leg(), no_vig_prob(), closing_line_value(), breakeven_display()
-  ✅ slipiq_propline.py — PropLine API client, intraday line polling
-  ✅ slipiq_prizepicks.py — PrizePicks API client, format_pp_entry_discord()
-  ✅ slipiq_montecarlo.py — quick_validate_parlay(), correlation matrix, Kelly sizing
-  ✅ slipiq_calibration.py — log_prediction(), log_result_by_player(), calibration_summary()
-  ✅ slipiq_sharp_api.py — Sharp API supplement client
-  ✅ slipiq_propline_scanner.py — intraday_scanner(), start_scanner() daemon
-  ✅ slipiq_slip_router.py — SlipRouter, route_all_slips(), per-book correlated slip dispatch
-  ✅ slipiq_independent_parlay.py — build_pitcher_lotto_slip(), build_mlrl_parlay(), format helpers
-  ✅ slipiq_pitcher_props.py — shim resolving broken enrich_picks import
-  🔲 Supabase integration — replace picks_log.json with real DB
+  ✅ slipiq_parlayapi.py
+  ✅ slipiq_game_lines.py
+  ✅ slipiq_odds_supplement.py
+  ✅ slipiq_ev_engine.py (EV math foundation)
+  ✅ slipiq_propline.py (Prop-Line API — 1000 cr/day)
+  ✅ slipiq_prizepicks.py (PrizePicks fixed-multiplier engine)
+  ✅ slipiq_montecarlo.py (correlated SGP + bankroll simulation)
+  ✅ slipiq_calibration.py (Brier score, CLV logging)
+  ✅ slipiq_sharp_api.py (EV benchmarking — test bench only)
+  ✅ slipiq_propline_scanner.py (intraday scanner — 20-min polls)
+  ✅ slipiq_slip_router.py (routes picks to SGP/lotto/PP/ML-RL)
+  ✅ slipiq_independent_parlay.py (lotto $0.25 + ML/RL parlay)
+  ✅ slipiq_player_ids.py (MLB ID lookup — 11/11 tests passing)
+  ✅ slipiq_pitcher_props.py (broken import shim)
+  ✅ slipiq_batter_lines.py (fixed ev_confirmed, clean imports)
+  ✅ slipiq_parlay_alerts.py (routing reader, no more ad-hoc builder)
+  ✅ Supabase: calibration_log + closing_lines tables added
 
-  ARCHIVED (superseded): slipiq_sharp_review_agent.py → _slipiq_sharp_review_agent_legacy.py, slipiq_odds_api.py
-  DELETED: action_game.json, action2_test.json, sportsdata_test.json, slipiq_results.json, slipiq_bot_architecture.svg
+  ARCHIVED (header comment added, not deleted):
+    slipiq_sharp_review_agent.py → superseded by slipiq_sharp_review.py
+    slipiq_odds_api.py → superseded by slipiq_odds_supplement.py
 
 Phase 2 (MLB Hitter Props — Ongoing):
   🔲 Expand slipiq_curate.py batter coverage
