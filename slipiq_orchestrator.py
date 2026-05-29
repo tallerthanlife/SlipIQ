@@ -151,6 +151,14 @@ def reset_state_for_new_day(state: dict) -> dict:
     state["review_done"]        = False
     state["picks_posted"]       = 0
     state["nba_picks_posted"]   = 0
+
+    # Reset parlay alerts daily flag so it can post again today
+    try:
+        from slipiq_parlay_alerts import reset_daily_flag
+        reset_daily_flag()
+    except Exception:
+        pass
+
     return state
 
 

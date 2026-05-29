@@ -164,19 +164,19 @@ def _post_discord(channel_id: str | None, content: str) -> bool:
 
 def _post_line_move_alert(mover: dict, sharp_signal: str = "NEUTRAL") -> None:
     """Format and post a line movement alert to Discord."""
-    delta     = mover["delta"]
-    direction = "⬆️" if delta > 0 else "⬇️"
-    signal_emoji = {"CONFIRM": "✅", "WARN": "⚠️", "NEUTRAL": "📊"}.get(sharp_signal, "📊")
-
-    msg = (
-        f"{signal_emoji} **Line Move Alert**\n"
-        f"{mover['player']} — {mover['market'].replace('player_', '').replace('_', ' ').title()}\n"
-        f"{direction} {mover['old_line']} → **{mover['new_line']}** ({delta:+.1f})\n"
-        f"Book: {mover['book']} | Sharp signal: {sharp_signal}"
-    )
-
-    _post_discord(DISCORD_LIVE_ALERTS_CHANNEL, msg)
-    print(f"  [scanner] Line move alert: {mover['player']} {delta:+.1f} | {sharp_signal}")
+    try:
+        from slipiq_parlay_alerts import post_line_move_alert as _alert
+        _alert(
+            player       = mover.get("player", ""),
+            market       = mover.get("market", ""),
+            old_line     = mover.get("old_line", 0),
+            new_line     = mover.get("new_line", 0),
+            book         = mover.get("book", ""),
+            delta        = mover.get("delta", 0),
+            sharp_signal = sharp_signal,
+        )
+    except Exception as e:
+        print(f"  [scanner] Line move alert error: {e}")
 
 
 # ═══════════════════════════════════════════════════════════════
