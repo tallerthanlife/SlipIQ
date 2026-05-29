@@ -505,13 +505,32 @@ def run_batter_model(
     fallback_count  = 0
 
     for (player, market), prop_data in lines.items():
-        # Fetch stats — cached from mlb_data
+        # get_batter_statcast returns full DataFrame — filter for this player
         try:
-            season_stats = get_batter_statcast(player) or {}
-            recent_form  = get_batter_recent_form(player) or {}
+            from slipiq_mlb_data import get_batter_statcast_season
+            batter_df = get_batter_statcast_season()
+            if not batter_df.empty:
+                # Match by MLBAM ID if available, else by name
+                try:
+                    from slipiq_player_ids import get_mlb_id
+                    mlbam_id = get_mlb_id(player)
+                    if mlbam_id:
+                        row = batter_df[batter_df["batter"] == mlbam_id]
+                    else:
+                        row = pd.DataFrame()
+                except Exception:
+                    row = pd.DataFrame()
+                season_stats = row.iloc[0].to_dict() if not row.empty else {}
+            else:
+                season_stats = {}
         except Exception:
             season_stats = {}
-            recent_form  = {}
+
+        try:
+            from slipiq_mlb_data import get_batter_recent_form
+            recent_form = get_batter_recent_form(player) or {}
+        except Exception:
+            recent_form = {}
 
         card = build_batter_pick_card(
             player_name  = player,

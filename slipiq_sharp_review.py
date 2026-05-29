@@ -798,6 +798,33 @@ def _post_summary_to_discord(results: list[dict], record: dict, game_date: str):
 
     post_message(DISCORD_SHARP_REVIEW_CHANNEL, embed=embed)
 
+    # Post to team-parlay as day-complete operator summary
+    try:
+        from slipiq_env import CHANNEL_TEAM_PARLAY
+        from slipiq_discord import post_message
+        from slipiq_slate_clock import SlateClock
+
+        tomorrow_clock = SlateClock()
+        tomorrow_clock.get_fire_windows(force_refresh=True)
+        tomorrow_summary = tomorrow_clock.slate_summary()
+
+        wins   = sum(1 for r in results if r.get("hit"))
+        losses = sum(1 for r in results if not r.get("hit") and not r.get("push"))
+        hr     = round(wins / max(wins + losses, 1) * 100, 1)
+        clv_vals = [r.get("clv") for r in results if r.get("clv") is not None]
+        avg_clv  = round(sum(clv_vals) / len(clv_vals), 2) if clv_vals else None
+        clv_str  = f" | Avg CLV {avg_clv:+.2f}" if avg_clv is not None else ""
+
+        content = (
+            f"📊 **Day Complete — {game_date}**\n"
+            f"Results: **{wins}W {losses}L** ({hr}%){clv_str}\n"
+            f"Tomorrow: {tomorrow_summary}"
+        )
+        if CHANNEL_TEAM_PARLAY:
+            post_message(CHANNEL_TEAM_PARLAY, content=content)
+    except Exception as e:
+        print(f"  [sharp] day summary post error: {e}")
+
 
 # ═════════════════════════════════════════
 # TEST

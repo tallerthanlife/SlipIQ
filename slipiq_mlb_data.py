@@ -144,17 +144,30 @@ def get_pitcher_recent_form(player_name: str, n_starts: int = 5) -> dict:
 
     print(f"  [fetch] Recent form: {player_name}...")
 
+    # Try player_ids lookup first (instant, no API call)
+    mlbam_id = None
     try:
-        # Lookup MLBAM ID
-        parts = player_name.strip().split()
-        last, first = parts[-1], parts[0]
-        lookup = pyb.playerid_lookup(last, first)
+        from slipiq_player_ids import get_mlb_id
+        mlbam_id = get_mlb_id(player_name)
+    except Exception:
+        pass
 
-        if lookup.empty:
-            print(f"  [warn] Not found: {player_name}")
-            return {"player": player_name, "error": "not_found"}
+    # Fall back to pybaseball name lookup if not in table
+    if not mlbam_id:
+        try:
+            parts  = player_name.strip().split()
+            last   = parts[-1] if parts else ""
+            first  = parts[0]  if parts else ""
+            lookup = pyb.playerid_lookup(last, first)
+            if lookup.empty:
+                print(f"  [mlb_data] Player not found: {player_name}")
+                return {}
+            mlbam_id = int(lookup.iloc[0]["key_mlbam"])
+        except Exception as e:
+            print(f"  [mlb_data] ID lookup failed for {player_name}: {e}")
+            return {}
 
-        mlbam_id = int(lookup.iloc[0]["key_mlbam"])
+    try:
 
         # Pull Statcast pitcher log for season
         log = pyb.statcast_pitcher(

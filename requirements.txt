@@ -1,4 +1,3 @@
-anthropic
 python-dotenv
 requests
 pandas
