@@ -24,8 +24,11 @@ CACHE_DIR.mkdir(exist_ok=True)
 
 CURRENT_YEAR = datetime.now().year
 SEASON_START = f"{CURRENT_YEAR}-03-15"
-TODAY = datetime.now().strftime("%Y-%m-%d")
-LAST_30 = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+TODAY        = datetime.now().strftime("%Y-%m-%d")
+LAST_30      = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+# Rolling 14-day window — prevents OOM on 500 MB servers from full-season pulls
+WINDOW_START = (datetime.now() - timedelta(days=14)).strftime("%Y-%m-%d")
+WINDOW_END   = TODAY
 
 
 # ═════════════════════════════════════════
@@ -72,11 +75,11 @@ def get_pitcher_statcast_season(force: bool = False) -> pd.DataFrame:
             print(f"  [cache] statcast season hit")
             return pd.DataFrame(cached)
 
-    print(f"  [fetch] Statcast pitcher season {SEASON_START} -> {TODAY}...")
+    print(f"  [fetch] Statcast pitcher {WINDOW_START} -> {WINDOW_END} (14-day window)...")
     print(f"          (Baseball Savant — this takes 30-60s first run)")
 
     try:
-        df = pyb.statcast(start_dt=SEASON_START, end_dt=TODAY)
+        df = pyb.statcast(start_dt=WINDOW_START, end_dt=WINDOW_END)
     except Exception as e:
         print(f"  [error] Statcast full season failed: {e}")
         return pd.DataFrame()
@@ -169,10 +172,10 @@ def get_pitcher_recent_form(player_name: str, n_starts: int = 5) -> dict:
 
     try:
 
-        # Pull Statcast pitcher log for season
+        # Pull Statcast pitcher log — 14-day rolling window to avoid OOM
         log = pyb.statcast_pitcher(
-            start_dt=SEASON_START,
-            end_dt=TODAY,
+            start_dt=WINDOW_START,
+            end_dt=WINDOW_END,
             player_id=mlbam_id
         )
 
@@ -246,10 +249,10 @@ def get_batter_k_rates(force: bool = False) -> pd.DataFrame:
             print(f"  [cache] batter K rates hit")
             return pd.DataFrame(cached)
 
-    print(f"  [fetch] Batter K rates {SEASON_START} -> {TODAY}...")
+    print(f"  [fetch] Batter K rates {WINDOW_START} -> {WINDOW_END} (14-day window)...")
 
     try:
-        df = pyb.statcast(start_dt=SEASON_START, end_dt=TODAY)
+        df = pyb.statcast(start_dt=WINDOW_START, end_dt=WINDOW_END)
 
         if df is None or df.empty:
             return pd.DataFrame()
