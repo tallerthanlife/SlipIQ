@@ -162,29 +162,21 @@ def build_best_pick_embed(card: dict) -> dict:
         },
     ]
 
-    # ── EV field (real math) ───────────────────────────────────
-    ev_val    = card.get("ev")
-    ev_src    = card.get("ev_source", "none")
-    breakeven = card.get("breakeven")
-
+    # ── EV field ──────────────────────────────────────────────
+    ev_val = card.get("ev")
+    ev_src = card.get("ev_source", "none")
     if ev_val is not None and ev_src == "ev_engine_pinnacle":
-        ev_sign  = "+" if ev_val >= 0 else ""
-        ev_str   = f"**{ev_sign}{ev_val*100:.1f}%** edge vs Pinnacle"
-        if breakeven:
-            ev_str += f"\n{breakeven}"
-        ev_emoji = "✅" if ev_val >= 0.03 else ("⚠️" if ev_val >= 0 else "❌")
-    elif ev_val is not None and ev_src == "parlayapi_only":
-        ev_str   = f"{'+' if ev_val >= 0 else ''}{ev_val*100:.1f}% (unverified — no Pinnacle)"
-        ev_emoji = "⚠️"
-        if breakeven:
-            ev_str += f"\n{breakeven}"
+        ev_display = f"**{'+' if ev_val >= 0 else ''}{ev_val*100:.1f}%** vs Pinnacle"
+        if card.get("breakeven"):
+            ev_display += f"\n{card['breakeven']}"
+    elif ev_val is not None:
+        ev_display = f"{'+' if ev_val >= 0 else ''}{ev_val*100:.1f}% (unverified)"
     else:
-        ev_str   = "Unconfirmed — Pinnacle line not posted yet"
-        ev_emoji = "⏳"
+        ev_display = "Pinnacle line not posted yet"
 
     fields.append({
-        "name":   f"{ev_emoji} Expected Value",
-        "value":  ev_str,
+        "name":   "📈 Expected Value",
+        "value":  ev_display,
         "inline": False,
     })
 

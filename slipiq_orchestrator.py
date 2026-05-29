@@ -685,7 +685,8 @@ def run_scheduler() -> None:
     Continuous loop — checks every 60 seconds if a task should fire.
     Deployed on Railway via Procfile: worker: python slipiq_orchestrator.py --schedule
     """
-    _start_health_server()
+    import os
+    _start_health_server(port=int(os.environ.get("PORT", 8080)))
     print("=" * 60)
     print("SlipIQ Orchestrator — Scheduler Mode")
     print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M AZ')}")

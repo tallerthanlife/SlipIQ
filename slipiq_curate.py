@@ -183,6 +183,15 @@ def log_slate(slate: dict, top_picks: list[dict]):
     except Exception as e:
         print(f"  [curate] calibration log error: {e}")
 
+    # Log each pick to slipiq_results (Supabase + JSON record)
+    try:
+        from slipiq_results import log_pick
+        for pick in top_picks:
+            if pick.get("player") and pick.get("line"):
+                log_pick(pick, result=None)
+    except Exception as e:
+        print(f"  [curate] results log error: {e}")
+
     print(f"  [curate] slate logged → cache/{cache_key}")
 
 

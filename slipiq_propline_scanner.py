@@ -201,6 +201,12 @@ def run_poll(sport: str = SPORT_MLB, model_probs: dict | None = None) -> dict:
             "skipped"          : str | None,  # reason if skipped
         }
     """
+    from datetime import datetime
+    now_hour = datetime.now().hour
+    # Only scan during active hours: 10 AM to 10 PM AZ
+    if now_hour < 10 or now_hour >= 22:
+        return {"skipped": "outside_hours", "hour": now_hour}
+
     state = _load_state()
 
     if not _is_active_hours():
@@ -273,6 +279,25 @@ def run_poll(sport: str = SPORT_MLB, model_probs: dict | None = None) -> dict:
                 print(f"  [scanner] ✓ Posted {entry['n_picks']}-pick {entry['mode']} entry (EV {entry['ev']:+.1%})")
     else:
         print(f"  [scanner] No new +EV PrizePicks entries this poll")
+
+    # Post PrizePicks entries if any were built
+    try:
+        from slipiq_prizepicks import build_pp_entry_with_expiry
+        from slipiq_discord import post_prizepicks_entry
+        from slipiq_env import DISCORD_PRIZEPICKS_CHANNEL
+
+        if eligible_legs and DISCORD_PRIZEPICKS_CHANNEL:
+            entry = build_pp_entry_with_expiry(
+                eligible_legs = eligible_legs,
+                target_picks  = 4,
+                flex          = False,
+            )
+            if entry and entry.get("passes"):
+                posted = post_prizepicks_entry(entry)
+                if posted:
+                    print(f"  [scanner] PrizePicks {entry['n_picks']}-pick entry posted")
+    except Exception as e:
+        print(f"  [scanner] PrizePicks post error: {e}")
 
     # ── Step 4: Update state ───────────────────────────────────
     state["last_poll"]      = datetime.now().isoformat()
