@@ -283,6 +283,7 @@ def run_curation(
     # Step 5: Post to Discord
     curation_result = {
         "top_picks":    top_picks,
+        "post_list":    top_picks,   # alias expected by run_discord_post / build_morning_brief_embed
         "best_pick":    best_pick,
         "routing":      routing,
         "post_count":   len(top_picks),

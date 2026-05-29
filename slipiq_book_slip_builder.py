@@ -1,11 +1,11 @@
 # slipiq_book_slip_builder.py
 # Sportsbook slip assembly — mixed + correlated slips with per-book output
 
-from slipiq_curate import curation_score
+from slipiq_grading import calc_grade
 from slipiq_discord import build_parlay_slip_embed
 from slipiq_grading import calc_grade, calc_slip_grade
 from slipiq_ml_parlay import build_ml_parlays
-from slipiq_nba_curate import curation_score as nba_curation_score
+from slipiq_nba_curate import curation_score as nba_curation_score  # noqa: keep for NBA
 from slipiq_nba_parlay import build_nba_parlays
 from slipiq_parlayapi import DISPLAY_BOOK_KEYS, DISPLAY_BOOK_LABELS
 from slipiq_slip_review import review_pick
@@ -18,8 +18,13 @@ MAX_SLIP_LEGS = 6
 
 def _score_card(card: dict) -> float:
     if card.get("sport") == "nba":
-        return nba_curation_score(card)
-    return curation_score(card)
+        try:
+            return nba_curation_score(card)
+        except Exception:
+            pass
+    ev   = (card.get("ev") or 0) * 100
+    conf = card.get("confidence") or 0
+    return float(conf) + ev
 
 
 def _prop_short(card: dict) -> str:

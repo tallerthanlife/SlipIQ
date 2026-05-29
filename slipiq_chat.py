@@ -123,11 +123,10 @@ def _parse_command(text: str) -> tuple[str, str]:
 
 def _fetch_game_lines(sport: str) -> list:
     try:
-        from slipiq_confidence_agent import SPORT_MLB
-        from slipiq_parlayapi import fetch_odds_raw
-
+        from slipiq_game_lines import fetch_f5_ml_lines
         if sport in ("mlb", "both"):
-            return fetch_odds_raw(SPORT_MLB) or []
+            lines = fetch_f5_ml_lines() or {}
+            return list(lines.values()) if isinstance(lines, dict) else (lines or [])
     except Exception as e:
         print(f"  [chat] game lines fetch failed: {e}")
     return []
