@@ -245,6 +245,28 @@ def run_main(state: dict, force_discord: bool = True) -> dict:
     print("═" * 60)
 
     try:
+        # Alert Discord that a new slate window was detected
+        try:
+            from slipiq_discord import post_message
+            from slipiq_env import DISCORD_DAILY_PICKS_CHANNEL
+            from slipiq_slate_clock import SlateClock
+            clock   = SlateClock()
+            windows = clock.get_fire_windows()
+            total   = windows.get("total_games", 0)
+            summary = clock.slate_summary()
+            if total > 0 and DISCORD_DAILY_PICKS_CHANNEL:
+                post_message(
+                    DISCORD_DAILY_PICKS_CHANNEL,
+                    content=(
+                        f"⚾ **SlipIQ pipeline firing** — "
+                        f"{total} games detected today\n"
+                        f"{summary}\n"
+                        f"Picks incoming shortly..."
+                    )
+                )
+        except Exception:
+            pass
+
         # ── [1] Props pull ────────────────────────────────────
         from slipiq_parlayapi import fetch_props_raw, SPORT_MLB
         print("\n  [1] Refreshing prop lines (3 credits)...")

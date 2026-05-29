@@ -244,6 +244,52 @@ def create_bot() -> discord.Client:
                 await message.reply("Session reset. Send `!slip` or upload a screenshot to start fresh.")
                 return
 
+            if subcmd == "status":
+                status_lines = ["**SlipIQ Status**"]
+                try:
+                    from slipiq_slate_clock import SlateClock
+                    clock   = SlateClock()
+                    windows = clock.get_fire_windows()
+                    status_lines.append(f"📅 Slate: {clock.slate_summary()}")
+                except Exception:
+                    status_lines.append("📅 Slate clock unavailable")
+
+                try:
+                    from slipiq_env import api_keys_status
+                    keys = api_keys_status()
+                    status_lines.append(
+                        f"🔑 APIs: ParlayAPI {'✅' if keys.get('parlay_api') else '❌'} | "
+                        f"PropLine {'✅' if keys.get('propline') else '❌'} | "
+                        f"OddsAPI {keys.get('odds_api_1') and '✅' or '❌'}"
+                    )
+                except Exception:
+                    pass
+
+                try:
+                    from slipiq_results import get_track_record_snapshot
+                    rec = get_track_record_snapshot()
+                    status_lines.append(
+                        f"📊 Record: {rec.get('label', 'No picks yet')} "
+                        f"({rec.get('hit_rate', 0):.1f}% hit rate)"
+                    )
+                except Exception:
+                    status_lines.append("📊 Record: unavailable")
+
+                try:
+                    cache_dir = Path("cache")
+                    picks_path = cache_dir / "latest_picks.json"
+                    if picks_path.exists():
+                        import json as _json
+                        picks = _json.loads(picks_path.read_text())
+                        status_lines.append(f"🎯 Today's picks: {len(picks)} posted")
+                    else:
+                        status_lines.append("🎯 Today's picks: none posted yet")
+                except Exception:
+                    pass
+
+                await message.reply("\n".join(status_lines), mention_author=False)
+                return
+
             if subcmd == "help":
                 await message.reply(
                     "**SlipIQ Chat Builder**\n"

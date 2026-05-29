@@ -259,3 +259,24 @@ if __name__ == "__main__":
             show_pending()
         else:
             print("No picks today")
+
+
+def get_track_record_snapshot() -> dict:
+    """
+    Return a summary dict of the all-time record.
+    Called by slipiq_chat_pool.py when building pick pools.
+    """
+    try:
+        stats = calculate_hit_rates(silent=True)
+        if not stats:
+            return {"total": 0, "hit_rate": 0.0, "label": "No record yet"}
+        return {
+            "total":      stats.get("settled_count", 0),
+            "wins":       stats.get("total_wins", 0),
+            "hit_rate":   stats.get("overall_hit_rate", 0.0),
+            "by_grade":   stats.get("by_grade", {}),
+            "label":      f"{stats.get('total_wins', 0)}W / {stats.get('settled_count', 0)} settled",
+        }
+    except Exception as e:
+        print(f"  [results] track record error: {e}")
+        return {"total": 0, "hit_rate": 0.0, "label": "No record yet"}

@@ -586,7 +586,15 @@ def run_sharp_review(game_date: str = None, post_to_discord: bool = True, sport:
         actual_ks = fetch_pitcher_actual_ks(player, game_date)
 
         if actual_ks is None:
-            print(f"  [sharp] Skipping {player} — no result data yet")
+            # Statcast has 24-hour delay — results from today won't be
+            # available until tomorrow morning
+            from datetime import datetime, date
+            today = date.today().isoformat()
+            if game_date >= today:
+                print(f"  [sharp] {player} — game result not yet in Statcast "
+                      f"(24h delay). Will grade tomorrow.")
+            else:
+                print(f"  [sharp] {player} — no result found for {game_date}")
             continue
 
         # Fetch closing line for CLV

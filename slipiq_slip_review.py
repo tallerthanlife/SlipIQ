@@ -182,7 +182,7 @@ def build_slip_review_embed(pick):
     color = 0x00FF88 if review["passed"] else 0xFF6644
 
     embed = discord.Embed(
-        title=f"Slip Review — {pick['pitcher']} {direction} {pick['line']} K",
+        title=f"Slip Review — {pick.get('player') or pick.get('pitcher', '')} {direction} {pick['line']} K",
         description=f"**{'APPROVED' if review['passed'] else 'CAUTION'}** | Checklist {review['score']}% | {review['units']}u suggested",
         color=color,
     )
