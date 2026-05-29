@@ -45,6 +45,7 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 from dotenv import load_dotenv
+from slipiq_slate_clock import SlateClock
 load_dotenv()
 
 CACHE_DIR  = Path("cache")
@@ -96,6 +97,9 @@ def load_state() -> dict:
         "picks_posted":      0,
         "nba_picks_posted":  0,
         "last_run":          None,
+        "morning_done":      False,
+        "afternoon_done":    False,
+        "evening_done":      False,
     }
 
 
@@ -158,6 +162,9 @@ def reset_state_for_new_day(state: dict) -> dict:
     state["review_done"]        = False
     state["picks_posted"]       = 0
     state["nba_picks_posted"]   = 0
+    state["morning_done"]       = False
+    state["afternoon_done"]     = False
+    state["evening_done"]       = False
     return state
 
 
@@ -712,6 +719,11 @@ def run_scheduler() -> None:
         print(f"  {t} AZ — {name}")
     print("\nPress Ctrl+C to stop\n")
 
+    # Initialize game-aware slate clock
+    clock = SlateClock()
+    clock.get_fire_windows()  # pre-load on startup
+    print(f"\n  {clock.slate_summary()}\n")
+
     # Import NBA flag once
     try:
         from slipiq_env import NBA_SEASON_ACTIVE
@@ -735,8 +747,36 @@ def run_scheduler() -> None:
                 state = run_early(state)
                 save_state(state)
 
+            elif (
+                not state.get("morning_done")
+                and clock.should_fire("morning", state)
+            ):
+                print(f"\n[{now_str}] → Morning slate detected — firing main run")
+                state = run_main(state)
+                state["morning_done"] = True
+                save_state(state)
+
+            elif (
+                not state.get("afternoon_done")
+                and clock.should_fire("afternoon", state)
+            ):
+                print(f"\n[{now_str}] → Afternoon slate detected — firing second run")
+                state["afternoon_done"] = True
+                state = run_confirm(state)
+                save_state(state)
+
+            elif (
+                not state.get("evening_done")
+                and clock.should_fire("evening", state)
+            ):
+                print(f"\n[{now_str}] → Evening slate detected — firing evening run")
+                state["evening_done"] = True
+                state = run_confirm(state)
+                save_state(state)
+
             elif should_run(SCHEDULE["main"], state["main_done"]):
-                print(f"\n[{now_str}] → Main run")
+                # Fallback: fire at 8:30 AM if clock had no data
+                print(f"\n[{now_str}] → Fallback main run (no slate data)")
                 state = run_main(state)
                 save_state(state)
 
@@ -787,18 +827,11 @@ def run_scheduler() -> None:
                 save_state(state)
 
             else:
-                # Idle — show next task
-                remaining = [
-                    (n, t) for n, t in SCHEDULE.items()
-                    if not state.get(f"{n}_done", False)
-                    and n not in ("pp_start", "pp_stop")
-                ]
-                if remaining:
-                    next_name, next_time = remaining[0]
-                    print(
-                        f"  [{now_str}] Idle — next: {next_name} @ {next_time} AZ   ",
-                        end="\r"
-                    )
+                next_info = clock.get_next_fire_info(state)
+                print(
+                    f"  [{now_str}] Idle — next: {next_info}   ",
+                    end="\r"
+                )
 
             time.sleep(LOOP_INTERVAL)
 
