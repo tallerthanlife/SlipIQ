@@ -333,12 +333,39 @@ def fetch_props_raw(sport_key: str = SPORT_MLB, force: bool = False) -> list[dic
 
     print(f"  [API] /props {sport_key} — 3 credits")
     r = _fetch_with_retry(f"{BASE_URL}/sports/{sport_key}/props", headers=HEADERS)
-    if r is None:
-        print(f"  [API] /props unavailable — skipping (no stale fallback for daily data)")
-        return []
-    data = r.json()
-    _cache_write(cache_key, data)
-    return data
+    if r is not None:
+        data = r.json()
+        _cache_write(cache_key, data)
+        return data
+
+    # ── Failsafe 1: PropLine API ──────────────────────────────────
+    print(f"  [API] Parlay API down — trying PropLine failsafe...")
+    try:
+        from slipiq_propline import fetch_propline_props
+        from slipiq_propline import SPORT_MLB as PL_MLB, SPORT_NBA as PL_NBA
+        _sport_map = {SPORT_MLB: PL_MLB, SPORT_NBA: PL_NBA}
+        pl_sport = _sport_map.get(sport_key, sport_key)
+        fallback = fetch_propline_props(pl_sport, force=True)
+        if fallback:
+            print(f"  [API] PropLine failsafe: {len(fallback)} props returned")
+            return fallback
+        print(f"  [API] PropLine returned empty — trying Odds API failsafe...")
+    except Exception as e:
+        print(f"  [API] PropLine failsafe error: {e}")
+
+    # ── Failsafe 2: The Odds API (key rotation 1→2→3 built-in) ───
+    try:
+        from slipiq_odds_supplement import fetch_odds_api_strikeout_props
+        fallback = fetch_odds_api_strikeout_props()
+        if fallback:
+            print(f"  [API] Odds API failsafe: {len(fallback)} props returned")
+            return fallback
+        print(f"  [API] Odds API also returned empty.")
+    except Exception as e:
+        print(f"  [API] Odds API failsafe error: {e}")
+
+    print(f"  [API] All failsafes exhausted for {sport_key} — no picks today.")
+    return []
 
 
 def fetch_odds_raw(sport_key: str = SPORT_MLB, markets: list = None) -> list[dict]:
