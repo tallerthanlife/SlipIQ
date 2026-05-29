@@ -334,7 +334,8 @@ def fetch_props_raw(sport_key: str = SPORT_MLB, force: bool = False) -> list[dic
     print(f"  [API] /props {sport_key} — 3 credits")
     r = _fetch_with_retry(f"{BASE_URL}/sports/{sport_key}/props", headers=HEADERS)
     if r is None:
-        return _cache_read(cache_key, max_age_minutes=1440) or []
+        print(f"  [API] /props unavailable — skipping (no stale fallback for daily data)")
+        return []
     data = r.json()
     _cache_write(cache_key, data)
     return data
@@ -360,7 +361,8 @@ def fetch_odds_raw(sport_key: str = SPORT_MLB, markets: list = None) -> list[dic
         params={"regions": "us", "markets": ",".join(markets), "oddsFormat": "american"},
     )
     if r is None:
-        return _cache_read(cache_key, max_age_minutes=1440) or []
+        print(f"  [API] /odds unavailable — skipping")
+        return []
     data = r.json()
     _cache_write(cache_key, data)
     return data
@@ -379,7 +381,8 @@ def fetch_consensus(sport_key: str = SPORT_MLB) -> list[dict]:
     print(f"  [API] /consensus {sport_key} — 3 credits")
     r = _fetch_with_retry(f"{BASE_URL}/sports/{sport_key}/consensus", headers=HEADERS)
     if r is None:
-        return _cache_read(cache_key, max_age_minutes=1440) or []
+        print(f"  [API] /consensus unavailable — skipping")
+        return []
     data = r.json()
     _cache_write(cache_key, data)
     return data
@@ -397,7 +400,8 @@ def fetch_period_markets(sport_key: str = SPORT_MLB) -> list[dict]:
     print(f"  [API] /live/period_markets {sport_key} — 2 credits")
     r = _fetch_with_retry(f"{BASE_URL}/sports/{sport_key}/live/period_markets", headers=HEADERS)
     if r is None:
-        return _cache_read(cache_key, max_age_minutes=1440) or []
+        print(f"  [API] /period_markets unavailable — skipping")
+        return []
     data = r.json()
     _cache_write(cache_key, data)
     return data
@@ -421,7 +425,8 @@ def fetch_historical(sport_key: str = SPORT_MLB, date: str = None) -> list[dict]
         params={"date": date},
     )
     if r is None:
-        return _cache_read(cache_key, max_age_minutes=1440) or []
+        print(f"  [API] /historical unavailable — skipping")
+        return []
     data = r.json()
     _cache_write(cache_key, data)
     return data
