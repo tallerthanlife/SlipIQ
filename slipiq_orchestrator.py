@@ -71,6 +71,11 @@ LOOP_INTERVAL = 60   # scheduler tick (seconds)
 _pp_scanner_running = False
 _pp_scanner_thread: threading.Thread | None = None
 
+# ─── Overlap / coalesce guards (max_instances=1 equivalent) ──
+_pipeline_running: bool = False               # True while any pipeline job is executing
+_last_pipeline_end: datetime | None = None    # timestamp of last completed pipeline run
+_MIN_PIPELINE_COOLDOWN_SEC: int = 20 * 60     # 20-minute minimum gap between pipeline fires
+
 
 # ═══════════════════════════════════════════════════════════════
 # SECTION 1 — STATE MANAGER
@@ -764,96 +769,132 @@ def run_scheduler() -> None:
                 save_state(state)
             now_str = datetime.now().strftime("%H:%M")
 
-            if should_run(SCHEDULE["early"], state["early_done"]):
-                print(f"\n[{now_str}] → Early run")
-                state = run_early(state)
-                save_state(state)
+            global _pipeline_running, _last_pipeline_end
 
-            elif (
-                not state.get("morning_done")
-                and clock.should_fire("morning", state)
-            ):
-                print(f"\n[{now_str}] → Morning slate detected — firing main run")
-                state = run_main(state)
-                state["morning_done"] = True
-                save_state(state)
+            # ── max_instances=1 guard ─────────────────────────────────
+            if _pipeline_running:
+                print(f"  [{now_str}] ⚠️  Pipeline already running — tick skipped  ", end="\r")
+                time.sleep(LOOP_INTERVAL)
+                continue
 
-            elif (
-                not state.get("afternoon_done")
-                and clock.should_fire("afternoon", state)
-            ):
-                print(f"\n[{now_str}] → Afternoon slate detected — firing second run")
-                state["afternoon_done"] = True
-                state = run_confirm(state)
-                save_state(state)
+            # ── 20-min cooldown between pipeline fires (coalesce) ─────
+            if _last_pipeline_end is not None:
+                elapsed = (datetime.now() - _last_pipeline_end).total_seconds()
+                if elapsed < _MIN_PIPELINE_COOLDOWN_SEC:
+                    mins_left = int((_MIN_PIPELINE_COOLDOWN_SEC - elapsed) / 60) + 1
+                    print(f"  [{now_str}] Cooldown — ~{mins_left}m until next pipeline allowed   ", end="\r")
+                    time.sleep(LOOP_INTERVAL)
+                    continue
 
-            elif (
-                not state.get("evening_done")
-                and clock.should_fire("evening", state)
-            ):
-                print(f"\n[{now_str}] → Evening slate detected — firing evening run")
-                state["evening_done"] = True
-                state = run_confirm(state)
-                save_state(state)
-
-            elif should_run(SCHEDULE["main"], state["main_done"]):
-                # Fallback: fire at 8:30 AM if clock had no data
-                print(f"\n[{now_str}] → Fallback main run (no slate data)")
-                state = run_main(state)
-                save_state(state)
-
-            elif should_run(SCHEDULE["confirm"], state["confirm_done"]):
-                print(f"\n[{now_str}] → Confirm run")
-                state = run_confirm(state)
-                save_state(state)
-
-            elif should_run(SCHEDULE["pp_start"], state.get("pp_scanner_started", False)):
-                print(f"\n[{now_str}] → PrizePicks scanner start")
-                state = start_pp_scanner_run(state)
-                save_state(state)
-
-            elif should_run(SCHEDULE["nba_main"], state.get("nba_main_done", False)):
-                if NBA_SEASON_ACTIVE:
-                    print(f"\n[{now_str}] → NBA main run")
-                    state = run_nba_main(state)
+            _pipeline_fired = False
+            _pipeline_running = True
+            try:
+                if should_run(SCHEDULE["early"], state["early_done"]):
+                    print(f"\n[{now_str}] → Early run")
+                    state = run_early(state)
                     save_state(state)
+                    _pipeline_fired = True
+
+                elif (
+                    not state.get("morning_done")
+                    and clock.should_fire("morning", state)
+                ):
+                    print(f"\n[{now_str}] → Morning slate detected — firing main run")
+                    state = run_main(state)
+                    state["morning_done"] = True
+                    save_state(state)
+                    _pipeline_fired = True
+
+                elif (
+                    not state.get("afternoon_done")
+                    and clock.should_fire("afternoon", state)
+                ):
+                    print(f"\n[{now_str}] → Afternoon slate detected — firing second run")
+                    state["afternoon_done"] = True
+                    state = run_confirm(state)
+                    save_state(state)
+                    _pipeline_fired = True
+
+                elif (
+                    not state.get("evening_done")
+                    and clock.should_fire("evening", state)
+                ):
+                    print(f"\n[{now_str}] → Evening slate detected — firing evening run")
+                    state["evening_done"] = True
+                    state = run_confirm(state)
+                    save_state(state)
+                    _pipeline_fired = True
+
+                elif should_run(SCHEDULE["main"], state["main_done"]):
+                    # Fallback: fire at 8:30 AM if clock had no data
+                    print(f"\n[{now_str}] → Fallback main run (no slate data)")
+                    state = run_main(state)
+                    save_state(state)
+                    _pipeline_fired = True
+
+                elif should_run(SCHEDULE["confirm"], state["confirm_done"]):
+                    print(f"\n[{now_str}] → Confirm run")
+                    state = run_confirm(state)
+                    save_state(state)
+                    _pipeline_fired = True
+
+                elif should_run(SCHEDULE["pp_start"], state.get("pp_scanner_started", False)):
+                    print(f"\n[{now_str}] → PrizePicks scanner start")
+                    state = start_pp_scanner_run(state)
+                    save_state(state)
+                    _pipeline_fired = True
+
+                elif should_run(SCHEDULE["nba_main"], state.get("nba_main_done", False)):
+                    if NBA_SEASON_ACTIVE:
+                        print(f"\n[{now_str}] → NBA main run")
+                        state = run_nba_main(state)
+                        save_state(state)
+                    else:
+                        state["nba_main_done"] = True  # skip silently
+                        save_state(state)
+                    _pipeline_fired = True
+
+                elif should_run(SCHEDULE["nba_confirm"], state.get("nba_confirm_done", False)):
+                    if NBA_SEASON_ACTIVE:
+                        print(f"\n[{now_str}] → NBA confirm")
+                        state = run_nba_confirm_run(state)
+                        save_state(state)
+                    else:
+                        state["nba_confirm_done"] = True
+                        save_state(state)
+                    _pipeline_fired = True
+
+                elif should_run(SCHEDULE["nba_breakout"], state.get("nba_breakout_done", False)):
+                    if NBA_SEASON_ACTIVE:
+                        print(f"\n[{now_str}] → NBA breakout scan")
+                        state = run_nba_breakout(state)
+                        save_state(state)
+                    else:
+                        state["nba_breakout_done"] = True
+                        save_state(state)
+                    _pipeline_fired = True
+
+                elif should_run(SCHEDULE["pp_stop"], False, window=5):
+                    print(f"\n[{now_str}] → PrizePicks scanner stop")
+                    _stop_pp_scanner()
+
+                elif should_run(SCHEDULE["review"], state["review_done"]):
+                    print(f"\n[{now_str}] → Sharp Review")
+                    state = run_review(state)
+                    save_state(state)
+                    _pipeline_fired = True
+
                 else:
-                    state["nba_main_done"] = True  # skip silently
-                    save_state(state)
+                    next_info = clock.get_next_fire_info(state)
+                    print(
+                        f"  [{now_str}] Idle — next: {next_info}   ",
+                        end="\r"
+                    )
 
-            elif should_run(SCHEDULE["nba_confirm"], state.get("nba_confirm_done", False)):
-                if NBA_SEASON_ACTIVE:
-                    print(f"\n[{now_str}] → NBA confirm")
-                    state = run_nba_confirm_run(state)
-                    save_state(state)
-                else:
-                    state["nba_confirm_done"] = True
-                    save_state(state)
-
-            elif should_run(SCHEDULE["nba_breakout"], state.get("nba_breakout_done", False)):
-                if NBA_SEASON_ACTIVE:
-                    print(f"\n[{now_str}] → NBA breakout scan")
-                    state = run_nba_breakout(state)
-                    save_state(state)
-                else:
-                    state["nba_breakout_done"] = True
-                    save_state(state)
-
-            elif should_run(SCHEDULE["pp_stop"], False, window=5):
-                print(f"\n[{now_str}] → PrizePicks scanner stop")
-                _stop_pp_scanner()
-
-            elif should_run(SCHEDULE["review"], state["review_done"]):
-                print(f"\n[{now_str}] → Sharp Review")
-                state = run_review(state)
-                save_state(state)
-
-            else:
-                next_info = clock.get_next_fire_info(state)
-                print(
-                    f"  [{now_str}] Idle — next: {next_info}   ",
-                    end="\r"
-                )
+            finally:
+                _pipeline_running = False
+                if _pipeline_fired:
+                    _last_pipeline_end = datetime.now()
 
             time.sleep(LOOP_INTERVAL)
 
