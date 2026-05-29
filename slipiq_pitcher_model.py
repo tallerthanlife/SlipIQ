@@ -425,35 +425,13 @@ def run_pitcher_model(sport_key: str = SPORT_MLB) -> list[dict]:
     k_props   = all_props["pitcher_strikeouts"]
     agg       = aggregate_by_player(k_props)
 
-    # Supplement Pinnacle strikeout lines via Odds API failsafe
-    # Runs only when Pinnacle is absent from parlayapi response
-    missing_pinnacle = [
-        player for (player, market), data in agg.items()
-        if market == "player_pitcher_strikeouts"
-        and not data.get("pinnacle")
-    ]
-    if missing_pinnacle:
-        try:
-            from slipiq_odds_supplement import fetch_odds_api_strikeout_props
-            supplement = fetch_odds_api_strikeout_props(
-                players_needed=set(missing_pinnacle)
-            )
-            if supplement:
-                from slipiq_parlayapi import aggregate_by_player as _agg
-                supp_agg = _agg(supplement)
-                # Inject Pinnacle lines into existing aggregation
-                for key, supp_data in supp_agg.items():
-                    if key in agg and supp_data.get("pinnacle"):
-                        agg[key]["pinnacle"]        = supp_data["pinnacle"]
-                        agg[key]["ev_over"]         = supp_data.get("ev_over")
-                        agg[key]["ev_under"]        = supp_data.get("ev_under")
-                        agg[key]["fair_over_prob"]  = supp_data.get("fair_over_prob")
-                        agg[key]["fair_under_prob"] = supp_data.get("fair_under_prob")
-                covered = sum(1 for d in agg.values() if d.get("pinnacle"))
-                print(f"    Pinnacle supplement: {len(supplement)} props → "
-                      f"{covered} players now have Pinnacle lines")
-        except Exception as e:
-            print(f"    [supplement] Pinnacle injection skipped: {e}")
+    # Pinnacle supplement — Prop-Line first, Odds API second (0 extra credits on cache hit)
+    try:
+        from slipiq_odds_supplement import supplement_pitcher_strikeout_props
+        k_props = supplement_pitcher_strikeout_props(k_props)
+        agg     = aggregate_by_player(k_props)
+    except Exception as e:
+        print(f"    [supplement] Skipped: {e}")
 
     print(f"    {len(agg)} pitcher/market combos found")
 
