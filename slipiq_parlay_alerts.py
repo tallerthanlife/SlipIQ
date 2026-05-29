@@ -10,6 +10,11 @@ def post_parlay_alerts(slate: dict) -> bool:
     Builds a high-confidence "Best Legs" Parlay from today's top picks.
     Posts to the designated Discord channel.
     """
+    # Skip if routing has already handled parlay posting via orchestrator
+    if slate.get("routing") and slate["routing"].get("stats", {}).get("indep", 0) > 0:
+        print("  [parlay_alerts] Routing handled — skipping duplicate post")
+        return
+
     post_list = slate.get("post_list", [])
     
     # 1. Filter for the absolute safest picks (Confidence 65+, Grade A or B+)

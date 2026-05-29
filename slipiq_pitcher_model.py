@@ -548,3 +548,6 @@ def print_pick_cards(cards: list[dict]):
 if __name__ == "__main__":
     cards = run_pitcher_model()
     print_pick_cards(cards)
+
+# Alias for orchestrator compatibility
+run_all_models = run_pitcher_model

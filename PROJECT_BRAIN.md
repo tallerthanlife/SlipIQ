@@ -761,8 +761,21 @@ Phase 1 (ACTIVE — MLB Summer 2026):
   ✅ slipiq_grading.py
   ✅ slipiq_normalization.py
   ✅ slipiq_pinnacle_props.py
-  🔲 slipiq_player_ids.py — static ESPN + MLB ID table (30 min build, fixes batter IDs)
+  ✅ slipiq_player_ids.py — static ESPN + MLB ID table, normalize_name, fuzzy_match, is_batter_on_team
+  ✅ slipiq_ev_engine.py — assess_leg(), no_vig_prob(), closing_line_value(), breakeven_display()
+  ✅ slipiq_propline.py — PropLine API client, intraday line polling
+  ✅ slipiq_prizepicks.py — PrizePicks API client, format_pp_entry_discord()
+  ✅ slipiq_montecarlo.py — quick_validate_parlay(), correlation matrix, Kelly sizing
+  ✅ slipiq_calibration.py — log_prediction(), log_result_by_player(), calibration_summary()
+  ✅ slipiq_sharp_api.py — Sharp API supplement client
+  ✅ slipiq_propline_scanner.py — intraday_scanner(), start_scanner() daemon
+  ✅ slipiq_slip_router.py — SlipRouter, route_all_slips(), per-book correlated slip dispatch
+  ✅ slipiq_independent_parlay.py — build_pitcher_lotto_slip(), build_mlrl_parlay(), format helpers
+  ✅ slipiq_pitcher_props.py — shim resolving broken enrich_picks import
   🔲 Supabase integration — replace picks_log.json with real DB
+
+  ARCHIVED (superseded): slipiq_sharp_review_agent.py → _slipiq_sharp_review_agent_legacy.py, slipiq_odds_api.py
+  DELETED: action_game.json, action2_test.json, sportsdata_test.json, slipiq_results.json, slipiq_bot_architecture.svg
 
 Phase 2 (MLB Hitter Props — Ongoing):
   🔲 Expand slipiq_curate.py batter coverage

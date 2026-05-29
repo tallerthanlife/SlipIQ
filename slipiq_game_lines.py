@@ -221,7 +221,15 @@ def fetch_f5_ml_lines(
 
     print(f"  [game_lines] F5 ML — {len(result)} games "
           f"({fetched} event pulls, cached)")
-    return result
+
+    # Return as dict keyed by (home_team, away_team) for orchestrator compatibility
+    if isinstance(result, list):
+        return {
+            (item.get("home_team", ""), item.get("away_team", "")): item
+            for item in result
+            if isinstance(item, dict)
+        }
+    return result if isinstance(result, dict) else {}
 
 
 def pitcher_score(card: dict) -> float:

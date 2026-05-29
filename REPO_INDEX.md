@@ -22,6 +22,22 @@ All runtime config: **`slipiq_env.py`** (matches live `.env`). See `.env.example
 | Parlay API NBA | `basketball_nba` markets | ✅ `get_nba_player_props()`, `get_all_nba_props()` |
 | Sharp review NBA | separate log | ✅ `run_nba_sharp_review()` → `cache/nba_record.json` |
 
+## Phase 1 new modules (MLB Summer 2026)
+
+| Module | Role |
+|--------|------|
+| `slipiq_ev_engine.py` | EV math foundation — no-vig, edge, Kelly, CLV, breakeven |
+| `slipiq_propline.py` | Prop-Line API — 1000 cr/day, Pinnacle source, dynamic polling |
+| `slipiq_prizepicks.py` | PrizePicks EV engine — fixed multiplier math, intraday scanner |
+| `slipiq_montecarlo.py` | Monte Carlo — correlated SGP validation, bankroll simulation |
+| `slipiq_calibration.py` | Brier score, reliability curve, CLV logging |
+| `slipiq_slip_router.py` | Routes curated picks to correct slip type |
+| `slipiq_independent_parlay.py` | Lotto slip + ML/RL independent parlay builder |
+| `slipiq_player_ids.py` | Static MLB ID lookup, normalize_name, fuzzy_match, is_batter_on_team |
+| `slipiq_pitcher_props.py` | Shim resolving broken enrich_picks import |
+| `slipiq_sharp_api.py` | Sharp API supplement client |
+| `slipiq_propline_scanner.py` | Intraday scanner daemon — `intraday_scanner()`, `start_scanner()` |
+
 ## NBA module map (Phase 3 — implemented)
 
 | Module | Role |
@@ -48,8 +64,7 @@ Manual: `python slipiq_orchestrator.py --nba` | `python slipiq_nba_orchestrator.
 ## MLB gaps (unchanged)
 
 - `slipiq_odds_api.py` — logic in `slipiq_parlayapi.py`
-- `enrich_picks` / `slipiq_pitcher_props` — broken imports in legacy paths
-- `slipiq_player_ids.py` — Phase 1 todo
+- `enrich_picks` / `slipiq_pitcher_props` — broken imports in legacy paths (shim added)
 
 ## Dependencies added
 
