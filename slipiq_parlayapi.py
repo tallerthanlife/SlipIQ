@@ -26,7 +26,6 @@
 
 import os
 import json
-import time
 import requests
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -284,40 +283,6 @@ def kelly_stake(ev: float, fair_prob: float, bankroll: float = 100) -> float:
 # CORE: RAW FETCHES
 # ═════════════════════════════════════════
 
-def _fetch_with_retry(
-    url: str,
-    *,
-    headers: dict,
-    params: dict = None,
-    timeout: int = 10,
-    retries: int = 3,
-    backoff: float = 2.0,
-) -> requests.Response | None:
-    """
-    GET with exponential backoff.  Returns the Response on success or None
-    after all retries are exhausted.  Never raises.
-    """
-    for attempt in range(1, retries + 1):
-        try:
-            r = requests.get(url, headers=headers, params=params, timeout=timeout)
-            r.raise_for_status()
-            return r
-        except (requests.exceptions.ConnectionError,
-                requests.exceptions.Timeout) as e:
-            wait = backoff ** attempt
-            print(f"  [API] Network error (attempt {attempt}/{retries}): {e.__class__.__name__} — retrying in {wait:.0f}s")
-            if attempt < retries:
-                time.sleep(wait)
-        except requests.exceptions.HTTPError as e:
-            print(f"  [API] HTTP {e.response.status_code} from {url}: {e}")
-            return None
-        except Exception as e:
-            print(f"  [API] Unexpected error fetching {url}: {e}")
-            return None
-    print(f"  [API] All {retries} retries exhausted for {url} — using cache or skipping.")
-    return None
-
-
 def fetch_props_raw(sport_key: str = SPORT_MLB, force: bool = False) -> list[dict]:
     """
     Fetch all props. 3 credits per call.
@@ -332,40 +297,15 @@ def fetch_props_raw(sport_key: str = SPORT_MLB, force: bool = False) -> list[dic
             return cached
 
     print(f"  [API] /props {sport_key} — 3 credits")
-    r = _fetch_with_retry(f"{BASE_URL}/sports/{sport_key}/props", headers=HEADERS)
-    if r is not None:
-        data = r.json()
-        _cache_write(cache_key, data)
-        return data
-
-    # ── Failsafe 1: PropLine API ──────────────────────────────────
-    print(f"  [API] Parlay API down — trying PropLine failsafe...")
-    try:
-        from slipiq_propline import fetch_propline_props
-        from slipiq_propline import SPORT_MLB as PL_MLB, SPORT_NBA as PL_NBA
-        _sport_map = {SPORT_MLB: PL_MLB, SPORT_NBA: PL_NBA}
-        pl_sport = _sport_map.get(sport_key, sport_key)
-        fallback = fetch_propline_props(pl_sport, force=True)
-        if fallback:
-            print(f"  [API] PropLine failsafe: {len(fallback)} props returned")
-            return fallback
-        print(f"  [API] PropLine returned empty — trying Odds API failsafe...")
-    except Exception as e:
-        print(f"  [API] PropLine failsafe error: {e}")
-
-    # ── Failsafe 2: The Odds API (key rotation 1→2→3 built-in) ───
-    try:
-        from slipiq_odds_supplement import fetch_odds_api_strikeout_props
-        fallback = fetch_odds_api_strikeout_props()
-        if fallback:
-            print(f"  [API] Odds API failsafe: {len(fallback)} props returned")
-            return fallback
-        print(f"  [API] Odds API also returned empty.")
-    except Exception as e:
-        print(f"  [API] Odds API failsafe error: {e}")
-
-    print(f"  [API] All failsafes exhausted for {sport_key} — no picks today.")
-    return []
+    r = requests.get(
+        f"{BASE_URL}/sports/{sport_key}/props",
+        headers=HEADERS,
+        timeout=10
+    )
+    r.raise_for_status()
+    data = r.json()
+    _cache_write(cache_key, data)
+    return data
 
 
 def fetch_odds_raw(sport_key: str = SPORT_MLB, markets: list = None) -> list[dict]:
@@ -382,14 +322,17 @@ def fetch_odds_raw(sport_key: str = SPORT_MLB, markets: list = None) -> list[dic
         return cached
 
     print(f"  [API] /odds {sport_key} — {len(markets)} credits")
-    r = _fetch_with_retry(
+    r = requests.get(
         f"{BASE_URL}/sports/{sport_key}/odds",
         headers=HEADERS,
-        params={"regions": "us", "markets": ",".join(markets), "oddsFormat": "american"},
+        params={
+            "regions": "us",
+            "markets": ",".join(markets),
+            "oddsFormat": "american",
+        },
+        timeout=10
     )
-    if r is None:
-        print(f"  [API] /odds unavailable — skipping")
-        return []
+    r.raise_for_status()
     data = r.json()
     _cache_write(cache_key, data)
     return data
@@ -406,10 +349,12 @@ def fetch_consensus(sport_key: str = SPORT_MLB) -> list[dict]:
         return cached
 
     print(f"  [API] /consensus {sport_key} — 3 credits")
-    r = _fetch_with_retry(f"{BASE_URL}/sports/{sport_key}/consensus", headers=HEADERS)
-    if r is None:
-        print(f"  [API] /consensus unavailable — skipping")
-        return []
+    r = requests.get(
+        f"{BASE_URL}/sports/{sport_key}/consensus",
+        headers=HEADERS,
+        timeout=10
+    )
+    r.raise_for_status()
     data = r.json()
     _cache_write(cache_key, data)
     return data
@@ -425,10 +370,12 @@ def fetch_period_markets(sport_key: str = SPORT_MLB) -> list[dict]:
         return cached
 
     print(f"  [API] /live/period_markets {sport_key} — 2 credits")
-    r = _fetch_with_retry(f"{BASE_URL}/sports/{sport_key}/live/period_markets", headers=HEADERS)
-    if r is None:
-        print(f"  [API] /period_markets unavailable — skipping")
-        return []
+    r = requests.get(
+        f"{BASE_URL}/sports/{sport_key}/live/period_markets",
+        headers=HEADERS,
+        timeout=10
+    )
+    r.raise_for_status()
     data = r.json()
     _cache_write(cache_key, data)
     return data
@@ -446,14 +393,13 @@ def fetch_historical(sport_key: str = SPORT_MLB, date: str = None) -> list[dict]
         return cached
 
     print(f"  [API] /historical {sport_key} {date} — variable credits")
-    r = _fetch_with_retry(
+    r = requests.get(
         f"{BASE_URL}/sports/{sport_key}/historical",
         headers=HEADERS,
         params={"date": date},
+        timeout=10
     )
-    if r is None:
-        print(f"  [API] /historical unavailable — skipping")
-        return []
+    r.raise_for_status()
     data = r.json()
     _cache_write(cache_key, data)
     return data
