@@ -33,7 +33,7 @@ load_dotenv()
 # ─── Config ───────────────────────────────────────────────────
 PROPLINE_API_KEY = os.getenv("PROPLINE_API_KEY")
 # Prop-Line API base — update if their docs specify a different path
-BASE_URL   = "https://api.prop-odds.com/beta"
+BASE_URL   = "https://api.prop-line.com/v1"
 HEADERS    = {
     "x-api-key": PROPLINE_API_KEY or "",
     "Accept":    "application/json",

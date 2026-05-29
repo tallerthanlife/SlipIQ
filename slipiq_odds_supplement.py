@@ -158,7 +158,10 @@ def _fetch_event_odds(event_id: str, key_idx: int = 0) -> dict | None:
         key, _ = _next_odds_key(key_idx + offset)
         if not key:
             return None
-        data = get_event_odds_cached(event_id, MARKET_KEY, key, ODDS_BASE)
+        data = get_event_odds_cached(
+            event_id, MARKET_KEY, key, ODDS_BASE,
+            bookmakers="pinnacle"
+        )
         if data:
             return data
     return None

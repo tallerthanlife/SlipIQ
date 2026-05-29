@@ -35,6 +35,7 @@ import sys
 import time
 import threading
 from datetime import datetime
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -660,11 +661,31 @@ def run_review(state: dict) -> dict:
 # SECTION 8 — SCHEDULER LOOP
 # ═══════════════════════════════════════════════════════════════
 
+class _HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, format, *args):
+        pass  # suppress access logs
+
+def _start_health_server(port: int = 8080) -> None:
+    """Start a minimal HTTP health check server for Railway."""
+    try:
+        server = HTTPServer(("0.0.0.0", port), _HealthHandler)
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        print(f"  [health] Health check server started on port {port}")
+    except Exception as e:
+        print(f"  [health] Health server failed to start: {e}")
+
+
 def run_scheduler() -> None:
     """
     Continuous loop — checks every 60 seconds if a task should fire.
     Deployed on Railway via Procfile: worker: python slipiq_orchestrator.py --schedule
     """
+    _start_health_server()
     print("=" * 60)
     print("SlipIQ Orchestrator — Scheduler Mode")
     print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M AZ')}")
@@ -686,7 +707,10 @@ def run_scheduler() -> None:
     while True:
         try:
             state = load_state()
-            state = reset_state_for_new_day(state)
+            today = datetime.now().strftime("%Y-%m-%d")
+            if state.get("last_reset_date") != today:
+                state = reset_state_for_new_day(state)
+                save_state(state)
             now_str = datetime.now().strftime("%H:%M")
 
             if should_run(SCHEDULE["early"], state["early_done"]):
