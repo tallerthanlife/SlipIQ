@@ -283,7 +283,6 @@ def run_curation(
     # Step 5: Post to Discord
     curation_result = {
         "top_picks":    top_picks,
-        "post_list":    top_picks,   # alias expected by run_discord_post / build_morning_brief_embed
         "best_pick":    best_pick,
         "routing":      routing,
         "post_count":   len(top_picks),
@@ -296,16 +295,6 @@ def run_curation(
             run_discord_post(curation_result)
         except Exception as e:
             print(f"  [curate] Discord post error: {e}")
-
-    try:
-        from slipiq_parlay_alerts import post_parlay_alerts
-        # Pass routing output so parlay_alerts can show pool summaries
-        slate_with_routing = {**slate}
-        if "routing" not in slate_with_routing:
-            slate_with_routing["routing"] = curation_result.get("routing", {})
-        post_parlay_alerts(slate_with_routing)
-    except Exception as e:
-        print(f"\n  [parlay] Error posting parlay channel: {e}")
 
     return curation_result
 
