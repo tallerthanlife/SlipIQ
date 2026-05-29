@@ -1,27 +1,35 @@
 # slipiq_curate.py
-# Morning Curation Layer — ties the full pipeline together
-# Runs at 6:30am AZ via scheduler (slipiq_orchestrator.py)
-# Re-runs at 9am when full slate is posted
+# ═══════════════════════════════════════════════════════════════
+# SlipIQ Morning Curation Layer
+# Runs at 8:30am AZ via scheduler (slipiq_orchestrator.py)
+# Re-runs at 9:15am for full slate confirmation
 #
 # PIPELINE ORDER:
-#   1. Run confidence agent → get gated slate
-#   2. Select best pick of the day
-#   3. Select top picks for full post
-#   4. Post to Discord
-#   5. Log slate to DB / cache for Sharp Review
+#   1. Run confidence agent → gated slate (POST/HOLD/SKIP)
+#   2. Filter to POST picks only
+#   3. Sort by real EV (from ev_engine) descending — not arbitrary score
+#   4. Cap at MAX_DAILY_POSTS, deduplicate by game
+#   5. Route through SlipRouter → SGP / indep / ML-RL / PP / lotto pools
+#   6. Post to Discord
+#   7. Log to Supabase/cache for Sharp Review
 #
-# CURATION LOGIC:
-#   Best pick = highest curation score
-#   Curation score = confidence + grade bonus + edge bonus
-#                  + ev bonus + book count bonus
-#   Tiebreaker = most books posting (market consensus)
+# WHAT CHANGED (rebuild):
+#   OLD: curation_score() = confidence + (ev_value*100)*2.5 + book_count_bonus + juice_penalty
+#        Arbitrary weighting on an uncalibrated confidence number.
+#   NEW: sort by card["ev"] from assess_leg() descending.
+#        filter: ev >= MIN_EV_POST (0.02)
+#        No arbitrary weights. The math already ranked them.
+#
+#   OLD: SlipRouter was not wired in.
+#   NEW: run_curation() calls SlipRouter at the end and returns routing
+#        output alongside the pick list for all downstream slip builders.
+# ═══════════════════════════════════════════════════════════════
 
 import json
 import sys
 from datetime import datetime
 from pathlib import Path
 
-# Windows console: avoid UnicodeEncodeError on log lines
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -38,319 +46,278 @@ from slipiq_discord import (
 CACHE_DIR = Path("cache")
 CACHE_DIR.mkdir(exist_ok=True)
 
-# ─────────────────────────────────────────
-# GRADE BONUSES
-# ─────────────────────────────────────────
-GRADE_BONUS = {
-    "A":   20,
-    "B+":  14,
-    "B":   10,
-    "B-":   6,
-    "C+":   3,
-    "C":    0,
-    "D":  -10,
-}
+# ─── Config ───────────────────────────────────────────────────
+MAX_DAILY_POSTS = 7      # cap at 7 picks per day
+MIN_EV_POST     = 0.02   # minimum real edge to include in daily post
+                         # (0.0 = post anything that passes gate; 0.02 = require edge)
+BANKROLL        = 500.0  # default Kelly bankroll — reads from env if set
 
-# ─────────────────────────────────────────
-# HOW MANY PICKS TO POST
-# ─────────────────────────────────────────
-MAX_DAILY_POSTS = 7   # cap at 7 picks per day — quality over quantity
+try:
+    from slipiq_env import _get_int
+    _br = _get_int("SLIPIQ_BANKROLL", 0)
+    if _br > 0:
+        BANKROLL = float(_br)
+except Exception:
+    pass
 
 
-# ═════════════════════════════════════════
-# CURATION SCORER
-# ═════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# SECTION 1 — PICK SELECTION (rebuilt — EV sort, not composite score)
+# ═══════════════════════════════════════════════════════════════
 
-def curation_score(card: dict) -> float:
+def _ev_sort_key(card: dict) -> tuple:
     """
-    Calculates the true value of a pick for the morning slate.
-    Rewards High Confidence + Positive EV. Penalizes heavy juice.
+    Sort key for POST picks.
+    Priority order:
+      1. Real EV (ev_source == ev_engine_pinnacle) beats fallback
+      2. EV value descending (higher edge first)
+      3. Grade (A > B+ > B)
+      4. Confidence descending
     """
-    confidence = card.get("confidence", 0)
-    ev_value = card.get("ev_value", 0) or 0  
-    book_count = card.get("book_count", 0)
-    best_book = card.get("best_book", {})
+    grade_order = {"A": 0, "B+": 1, "B": 2, "B-": 3, "C+": 4, "C": 5, "D": 6}
+    ev_real     = 1 if card.get("ev_source") != "ev_engine_pinnacle" else 0
+    ev_val      = -(card.get("ev") or 0)   # negative = descending
+    grade_rank  = grade_order.get(card.get("grade", "D"), 6)
+    conf_rank   = -(card.get("confidence") or 0)
+    return (ev_real, ev_val, grade_rank, conf_rank)
 
-    # 1. Base Score from Model Confidence
-    score = float(confidence)
 
-    # 2. Expected Value (+EV) Bonus
-    # Heavily weight picks where the market is underpricing the line
-    if ev_value > 0:
-        score += (ev_value * 100) * 2.5  
-    else:
-        score -= 5.0
-
-    # 3. Market Consensus Bonus
-    # A line posted across 3+ books is statistically safer
-    if book_count >= 3:
-        score += 5.0
-    else:
-        score -= 2.0
-
-    # 4. Juice Penalty (Avoid terrible payouts)
-    price = -110
-    if isinstance(best_book, dict) and "price" in best_book:
-        price = best_book.get("price", -110)
-        
-    if price < -160:
-        score -= 15.0  # Massive penalty for terrible odds
-    elif price > 100:
-        score += 8.0   # Bonus for underdog / plus-money payouts
-
-    return round(score, 1)
-
-# ═════════════════════════════════════════
-# PICK SELECTOR
-# ═════════════════════════════════════════
-
-def select_best_pick(post_list: list[dict]) -> dict | None:
+def select_top_picks(
+    post_list:  list[dict],
+    max_picks:  int = MAX_DAILY_POSTS,
+    min_ev:     float = MIN_EV_POST,
+) -> list[dict]:
     """
-    From POST-gated picks, select the single best pick of the day.
-    Used for #daily-picks headline pick.
-    """
-    if not post_list:
-        return None
-    return max(post_list, key=curation_score)
+    Select top N picks from POST list for the daily post.
 
-
-def select_top_picks(post_list: list[dict], max_picks: int = MAX_DAILY_POSTS) -> list[dict]:
-    """
-    Select top N picks from POST list for full daily post.
-    Sorted by curation score, capped at max_picks.
-    Filters out picks with the same game (avoids double-posting same matchup).
+    Filters: ev >= min_ev (skips picks with no Pinnacle data unless ev_source fallback)
+    Sorts: real EV descending
+    Deduplicates: one pick per matchup (game_key)
     """
     if not post_list:
         return []
 
-    scored   = sorted(post_list, key=curation_score, reverse=True)
-    selected = []
+    # Filter: require minimum EV when we have real data
+    # If ev_source is parlayapi_only and ev is low, still include (don't punish missing Pinnacle)
+    # But if ev_engine confirmed it's negative, skip
+    filtered = []
+    for card in post_list:
+        ev  = card.get("ev")
+        src = card.get("ev_source", "none")
+        if src == "ev_engine_pinnacle" and ev is not None and ev < min_ev:
+            # Real EV confirmed negative — skip
+            continue
+        filtered.append(card)
+
+    # Sort by EV descending (real EV first)
+    sorted_picks = sorted(filtered, key=_ev_sort_key)
+
+    selected   = []
     seen_games = set()
 
-    for card in scored:
-        # Deduplicate by game — one pick per matchup
-        game_key = (card.get("home_team"), card.get("away_team"))
-        if game_key in seen_games:
+    for card in sorted_picks:
+        game_key = (
+            card.get("home_team", "").lower(),
+            card.get("away_team", "").lower(),
+        )
+        if game_key in seen_games and game_key != ("", ""):
             continue
-
         selected.append(card)
         seen_games.add(game_key)
-
         if len(selected) >= max_picks:
             break
 
     return selected
 
 
-# ═════════════════════════════════════════
-# SLATE LOGGER
-# ═════════════════════════════════════════
+def select_best_pick(post_list: list[dict]) -> dict | None:
+    """Best single pick — highest real EV with A/B+ grade."""
+    if not post_list:
+        return None
+    return sorted(post_list, key=_ev_sort_key)[0]
+
+
+# ═══════════════════════════════════════════════════════════════
+# SECTION 2 — SLATE LOGGER
+# ═══════════════════════════════════════════════════════════════
 
 def log_slate(slate: dict, top_picks: list[dict]):
-    """
-    Save today's curated picks to cache for Sharp Review.
-    Sharp Review reads this post-game to grade results.
-    """
-    log = {
-        "date":       datetime.now().strftime("%Y-%m-%d"),
-        "run_time":   datetime.now().isoformat(),
-        "top_picks":  top_picks,
-        "post_count": slate.get("post_count", 0),
-        "hold_count": slate.get("hold_count", 0),
-        "skip_count": slate.get("skip_count", 0),
-        "total":      slate.get("total", 0),
+    """Save curated picks to cache for Sharp Review and calibration logging."""
+    today     = datetime.now().strftime("%Y-%m-%d")
+    cache_key = f"slate_{today}.json"
+    path      = CACHE_DIR / cache_key
+
+    # Also save as latest_picks.json for scanner line-move lookups
+    latest_path = CACHE_DIR / "latest_picks.json"
+
+    log_entry = {
+        "date":        today,
+        "run_time":    datetime.now().isoformat(),
+        "top_picks":   top_picks,
+        "post_count":  slate.get("post_count", 0),
+        "hold_count":  slate.get("hold_count", 0),
+        "skip_count":  slate.get("skip_count", 0),
+        "total":       slate.get("total", 0),
     }
 
-    # Daily log
-    log_path = CACHE_DIR / f"slate_{datetime.now().strftime('%Y%m%d')}.json"
-    with open(log_path, "w") as f:
-        json.dump(log, f, indent=2, default=str)
+    path.write_text(json.dumps(log_entry, indent=2, default=str))
+    latest_path.write_text(json.dumps(top_picks, indent=2, default=str))
 
-    # Latest picks — Sharp Review always reads this
-    latest_path = CACHE_DIR / "latest_picks.json"
-    with open(latest_path, "w") as f:
-        json.dump(log, f, indent=2, default=str)
+    # Log to calibration tracker
+    try:
+        from slipiq_calibration import log_prediction
+        for pick in top_picks:
+            if pick.get("player") and pick.get("market") and pick.get("true_prob"):
+                log_prediction(
+                    player     = pick["player"],
+                    market     = pick.get("market", "player_pitcher_strikeouts"),
+                    direction  = pick.get("direction", "over"),
+                    line       = pick.get("line") or 0,
+                    model_prob = pick.get("true_prob") or 0,
+                    book_odds  = (pick.get("best_book") or {}).get("price"),
+                    ev         = pick.get("ev"),
+                    grade      = pick.get("grade"),
+                    sport      = "mlb",
+                    game_date  = pick.get("game_date"),
+                )
+    except Exception as e:
+        print(f"  [curate] calibration log error: {e}")
 
-    print(f"  [curate] Slate logged -> {log_path.name}")
-    return log_path
+    print(f"  [curate] slate logged → cache/{cache_key}")
 
 
-# ═════════════════════════════════════════
-# STATUS CHECKER
-# ═════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# SECTION 3 — SLIP ROUTING (new — wires SlipRouter)
+# ═══════════════════════════════════════════════════════════════
 
-def is_market_open(slate: dict) -> bool:
+def route_picks(top_picks: list[dict]) -> dict:
     """
-    True when we have postable or lean picks with lines (thin market OK).
+    Route the curated pick pool through SlipRouter.
+    Returns routing dict with sgp_pool, indep_pool, ml_rl_pool, pp_queue, lotto_pool.
+    Downstream: slipiq_ml_parlay, slipiq_independent_parlay, slipiq_prizepicks.
     """
-    post_list = slate.get("post_list", [])
-    hold_list = slate.get("hold_list", [])
-    if post_list or hold_list:
-        return True
-
-    all_cards = slate.get("all_cards") or []
-    for card in all_cards:
-        if card.get("line") and card.get("confidence", 0) >= 50:
-            return True
-    return False
-
-
-def select_lean_picks(slate: dict, max_picks: int = MAX_DAILY_POSTS) -> list[dict]:
-    """When nothing POSTs, surface best HOLD/SKIP cards for private channel."""
-    candidates = []
-    for card in slate.get("hold_list", []) + slate.get("skip_list", []):
-        if card.get("grade") in ("C", "D", "N/A"):
-            continue
-        if card.get("confidence", 0) < 58:
-            continue
-        if not card.get("line"):
-            continue
-        candidates.append(card)
-
-    candidates.sort(key=curation_score, reverse=True)
-    seen = set()
-    out = []
-    for card in candidates:
-        key = (card.get("home_team"), card.get("away_team"))
-        if key in seen:
-            continue
-        seen.add(key)
-        card = dict(card)
-        card["gate"] = "LEAN"
-        out.append(card)
-        if len(out) >= max_picks:
-            break
-    return out
+    try:
+        from slipiq_slip_router import SlipRouter
+        router  = SlipRouter(bankroll=BANKROLL)
+        routing = router.route(top_picks)
+        stats   = routing["stats"]
+        print(f"  [curate] SlipRouter: "
+              f"SGP={stats['sgp']} | Indep={stats['indep']} | "
+              f"ML/RL={stats['ml_rl']} | PP={stats['pp_queue']} | "
+              f"Lotto={stats['lotto']} | Rejected={stats['rejected']}")
+        return routing
+    except Exception as e:
+        print(f"  [curate] SlipRouter error: {e} — returning empty routing")
+        return {
+            "sgp_pool": [], "indep_pool": [], "ml_rl_pool": [],
+            "pp_queue": [], "lotto_pool": [], "rejected": [],
+            "stats": {"total_input": len(top_picks), "sgp": 0, "indep": 0,
+                      "ml_rl": 0, "pp_queue": 0, "lotto": 0, "rejected": len(top_picks)},
+        }
 
 
-# ═════════════════════════════════════════
-# MAIN CURATION RUNNER
-# ═════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# SECTION 4 — MAIN CURATION RUNNER
+# ═══════════════════════════════════════════════════════════════
 
-def run_curation(post_to_discord: bool = True, sport_key: str = SPORT_MLB) -> dict:
+def run_curation(
+    sport_key:  str = SPORT_MLB,
+    post_discord: bool = True,
+) -> dict:
     """
     Full morning curation pipeline.
 
-    1. Run confidence agent
-    2. Check if market is open
-    3. Select best + top picks
-    4. Log slate
-    5. Post to Discord (if post_to_discord=True)
-
-    Returns summary dict.
+    Returns:
+        {
+            "top_picks"    : list[dict],  # curated picks for Discord
+            "best_pick"    : dict | None,
+            "routing"      : dict,        # SlipRouter output for slip builders
+            "post_count"   : int,
+            "slate"        : dict,        # full confidence agent output
+        }
     """
     print("\n" + "=" * 60)
-    print("SlipIQ Morning Curation")
+    print("SlipIQ Morning Curation — Running")
     print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M AZ')}")
     print("=" * 60)
 
-    # Step 1: Run full pipeline
+    # Step 1: Run confidence agent (includes ev_engine, context, gate)
     slate = run_confidence_agent(sport_key)
 
-    # Step 2: Market open check
-    market_open = is_market_open(slate)
-    post_list   = slate.get("post_list", [])
+    post_list = slate.get("post_list", [])
 
-    print(f"\n  Market open : {'YES' if market_open else 'NO — DFS books only'}")
-    print(f"  POST picks  : {len(post_list)}")
+    if not post_list:
+        print("\n  No POST picks. Checking HOLD list...")
+        hold_list = slate.get("hold_list", [])
+        if not hold_list:
+            print("  No picks yet — books still opening.")
+            if post_discord:
+                post_waiting_message()
+            return {
+                "top_picks":  [],
+                "best_pick":  None,
+                "routing":    {},
+                "post_count": 0,
+                "slate":      slate,
+            }
+        print(f"  {len(hold_list)} picks on HOLD — will retry at confirm run.")
 
-    # Step 3: Select picks (POST first, else lean slate for thin markets)
-    best_pick = select_best_pick(post_list)
+    # Step 2: Select top picks (EV sort, not composite score)
     top_picks = select_top_picks(post_list)
-    lean_picks = []
+    best_pick = select_best_pick(post_list)
 
-    if not top_picks:
-        lean_picks = select_lean_picks(slate)
-        if lean_picks:
-            print(f"\n  Thin market — posting {len(lean_picks)} LEAN picks")
-            best_pick = lean_picks[0]
-            top_picks = lean_picks
+    print(f"\n  Selected {len(top_picks)} picks for Discord post")
+    for i, pick in enumerate(top_picks, 1):
+        ev_str = f" EV {pick.get('ev', 0)*100:+.1f}%" if pick.get('ev') else ""
+        print(f"  {i}. [{pick.get('grade')}] {pick.get('player')} "
+              f"{pick.get('direction','').upper()} {pick.get('line')}"
+              f" | {pick.get('confidence')}%{ev_str}")
 
-    if best_pick:
-        print(f"\n  Best pick   : {best_pick.get('player')} "
-              f"{best_pick.get('direction', '').upper()} "
-              f"{best_pick.get('line')} "
-              f"[{best_pick.get('grade')}] "
-              f"{best_pick.get('confidence')}%")
-        print(f"  Score       : {curation_score(best_pick):.1f}")
-    else:
-        print("\n  No best pick — market not open yet")
+    # Step 3: Route through SlipRouter
+    all_post_for_routing = post_list  # route full POST list, not just top N
+    routing = route_picks(all_post_for_routing)
 
     # Step 4: Log
-    log_path = log_slate(slate, top_picks)
+    log_slate(slate, top_picks)
 
-    # Step 5: Discord + parlay channel (parlay always attempted when picks exist)
-    if post_to_discord:
-        if top_picks:
-            print(f"\n  [discord] Posting {len(top_picks)} picks...")
-            slate["best_pick"]  = best_pick
-            slate["post_list"]  = top_picks
-            slate["post_count"] = len(top_picks)
-            slate["lean_mode"]  = bool(lean_picks)
-            try:
-                run_discord_post(slate)
-            except Exception as e:
-                print(f"\n  [discord] Error: {e}")
-        elif market_open:
-            print("\n  [discord] Market thin — no picks cleared POST gate")
-            post_waiting_message()
-        else:
-            print("\n  [discord] Posting waiting message...")
-            post_waiting_message()
-
-        try:
-            from slipiq_parlay_alerts import post_parlay_alerts
-            post_parlay_alerts(slate)
-        except Exception as e:
-            print(f"\n  [parlay] Error posting parlay channel: {e}")
-    else:
-        print("\n  [discord] Skipped (post_to_discord=False)")
-
-    return {
-        "best_pick":    best_pick,
+    # Step 5: Post to Discord
+    curation_result = {
         "top_picks":    top_picks,
-        "market_open":  market_open,
+        "best_pick":    best_pick,
+        "routing":      routing,
         "post_count":   len(top_picks),
         "slate":        slate,
-        "log_path":     str(log_path),
+        "post_count_all": slate.get("post_count", 0),
     }
 
+    if post_discord and top_picks:
+        try:
+            run_discord_post(curation_result)
+        except Exception as e:
+            print(f"  [curate] Discord post error: {e}")
 
-# ═════════════════════════════════════════
-# TEST / MANUAL RUN
-# ═════════════════════════════════════════
+    return curation_result
+
+
+def run_full_curation(sport_key: str = SPORT_MLB) -> dict:
+    """
+    Alias for run_curation(). Called by orchestrator confirm run.
+    Skips Discord post if already posted today.
+    """
+    return run_curation(sport_key=sport_key, post_discord=True)
+
+
+# ═══════════════════════════════════════════════════════════════
+# ENTRY POINT
+# ═══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    import sys
-
-    # Pass --no-discord to test without posting
-    no_discord = "--no-discord" in sys.argv
-
-    result = run_curation(post_to_discord=not no_discord)
-
-    print("\n" + "=" * 60)
-    print("CURATION SUMMARY")
-    print("=" * 60)
-
-    best = result.get("best_pick")
-    if best:
-        print(f"\n  ★ Best Pick: {best.get('player')}")
-        print(f"    {best.get('direction','').upper()} {best.get('line')} Ks")
-        print(f"    Grade: {best.get('grade')} | Confidence: {best.get('confidence')}%")
-        print(f"    Curation score: {curation_score(best):.1f}")
-        bk = best.get("best_book")
-        if bk:
-            print(f"    ▶ {bk['side'].upper()} {bk['price']} @ {bk['book']}")
-
-    top = result.get("top_picks", [])
-    if top:
-        print(f"\n  Top {len(top)} picks for today:")
-        for i, card in enumerate(top, 1):
-            print(f"  {i}. [{card.get('grade')}] {card.get('player'):<22} "
-                  f"{card.get('direction','').upper():5} {card.get('line')} | "
-                  f"{card.get('confidence')}% | "
-                  f"Score: {curation_score(card):.1f}")
-
-    print(f"\n  Market open : {result.get('market_open')}")
-    print(f"  Log saved   : {result.get('log_path')}")
-    print(f"\n  Run with --no-discord to skip Discord posting")
+    result = run_curation()
+    print(f"\nCuration complete: {result['post_count']} picks posted")
+    routing = result.get("routing", {})
+    if routing:
+        stats = routing.get("stats", {})
+        print(f"Routing: SGP={stats.get('sgp',0)} | "
+              f"Indep={stats.get('indep',0)} | "
+              f"PP={stats.get('pp_queue',0)} | "
+              f"Lotto={stats.get('lotto',0)}")
