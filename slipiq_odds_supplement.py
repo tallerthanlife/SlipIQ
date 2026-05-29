@@ -35,7 +35,7 @@ from slipiq_env import ODDS_API_KEYS, ODDS_MAX_EVENTS, PROPLINE_API_KEY
 
 CACHE_DIR  = Path("cache")
 ODDS_BASE  = "https://api.the-odds-api.com/v4"
-MARKET_KEY = "pitcher_strikeouts"
+MARKET_KEY = "player_pitcher_strikeouts"
 
 # Books to pull from Odds API supplement (Pinnacle is the primary target)
 SUPPLEMENT_BOOKS = {"pinnacle", "draftkings", "fanatics"}
@@ -86,6 +86,10 @@ def fetch_propline_pinnacle_props(
         for p in props:
             book   = (p.get("book") or "").lower()
             market = (p.get("market") or "").lower()
+            # Normalize market key to match ParlayAPI format
+            if market in ("pitcher_strikeouts", "player_strike_outs",
+                          "player_pitcher_outs", "player_pitching_outs"):
+                market = "player_pitcher_strikeouts"
             player = p.get("player") or ""
 
             if book != BOOK_PINNACLE:
