@@ -15,11 +15,15 @@
 #   Lead with the edge, support with the data
 #   Short — Discord readers scroll fast
 
+import os
 import json
 from datetime import datetime
 from pathlib import Path
+from dotenv import load_dotenv
 
-from slipiq_env import GROQ_API_KEY, SLIPIQ_SKIP_AGENTIC
+load_dotenv()
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_MODEL   = "llama-3.3-70b-versatile"
 GROQ_URL     = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -101,8 +105,7 @@ def build_pitcher_prompt(card: dict) -> str:
     best_book  = card.get("best_book")
     home       = card.get("home_team", "")
     away       = card.get("away_team", "")
-    internal   = card.get("_internal") or {}
-    pinnacle   = internal.get("pinnacle_line")
+    pinnacle   = card.get("pinnacle_line")
     whiff      = card.get("season_whiff")
     k_rate     = card.get("season_k_rate")
 
@@ -112,10 +115,7 @@ def build_pitcher_prompt(card: dict) -> str:
     recent_proj = internal.get("recent_proj")
 
     book_line = ""
-    books_row = card.get("books_row")
-    if books_row:
-        book_line = f"Books: {books_row}"
-    elif best_book:
+    if best_book:
         book_line = (f"Best bet: {best_book['side'].upper()} "
                      f"{best_book['price']} @ {best_book['book']}")
 
@@ -160,10 +160,7 @@ def build_batter_prompt(card: dict) -> str:
     season_proj = internal.get("season_proj")
 
     book_line = ""
-    books_row = card.get("books_row")
-    if books_row:
-        book_line = f"Books: {books_row}"
-    elif best_book:
+    if best_book:
         book_line = (f"Best bet: {best_book['side'].upper()} "
                      f"{best_book['price']} @ {best_book['book']}")
 

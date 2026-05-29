@@ -8,7 +8,7 @@ import os
 import shutil
 from datetime import datetime, date
 
-RESULTS_FILE = "slipiq_results.json"
+RESULTS_FILE = "cache/slipiq_results.json"
 _client = None
 _supabase_import_ok = None
 _supabase_warned = False

@@ -235,31 +235,18 @@ def _batter_on_team(batter_pick: dict, team_name: str) -> bool:
     Uses slipiq_player_ids.is_batter_on_team() for reliable matching.
     Falls back to string matching if player not in lookup table.
     """
-    if not team_name:
-        return False
-
-    player_name = batter_pick.get("player", "")
-
     try:
-        from slipiq_player_ids import is_batter_on_team, get_team
-        result = is_batter_on_team(player_name, team_name)
-        if result:
+        from slipiq_player_ids import is_batter_on_team
+        if is_batter_on_team(batter_pick.get("player", ""), team_name):
             return True
-        player_team = get_team(player_name)
-        if player_team is not None:
-            return False
     except Exception:
         pass
 
     batter_team = batter_pick.get("team", "") or batter_pick.get("home_team", "")
-    team_lower  = team_name.lower()
-    if not batter_team:
+    if not batter_team or not team_name:
         return False
-    team_words = [w for w in team_lower.split() if len(w) > 3]
-    for word in team_words:
-        if word in batter_team.lower():
-            return True
-    return False
+    team_words = [w for w in team_name.lower().split() if len(w) > 3]
+    return any(word in batter_team.lower() for word in team_words)
 
 
 def build_mixed_slip(pool: list[dict], max_legs: int = MAX_SLIP_LEGS) -> dict | None:

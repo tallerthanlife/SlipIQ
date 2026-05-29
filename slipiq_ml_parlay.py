@@ -280,19 +280,20 @@ def build_game_sgp(pitcher_pick, batter_picks, game_line):
 
 def _batter_on_team(batter_pick, team_name):
     """Check if batter plays for the given team"""
-    if not team_name:
-        return False
-    # API data usually provides team in 'team' or 'home_team' if playing home
-    batter_team = batter_pick.get("team", "") or batter_pick.get("home_team", "")
-    team_lower  = team_name.lower()
-    if not batter_team:
-        return False
-        
-    team_words = [w for w in team_lower.split() if len(w) > 3]
-    for word in team_words:
-        if word in batter_team.lower():
+    try:
+        from slipiq_player_ids import is_batter_on_team
+        result = is_batter_on_team(batter_pick.get("player", ""), team_name)
+        if result:
             return True
-    return False
+    except Exception:
+        pass
+
+    # Fallback: string matching
+    batter_team = batter_pick.get("team", "") or batter_pick.get("home_team", "")
+    if not batter_team or not team_name:
+        return False
+    team_words = [w for w in team_name.lower().split() if len(w) > 3]
+    return any(word in batter_team.lower() for word in team_words)
 
 
 # ─── Cross-Game Combination ───────────────────────────────────
@@ -379,9 +380,14 @@ def build_ml_parlays(pitcher_picks, game_lines, batter_picks=None):
         if home: game_index[home[:5]] = gl
         if away: game_index[away[:5]] = gl
 
+    PITCHER_K_MARKETS = {
+        "player_strikeouts",
+        "player_pitcher_strikeouts",
+        "player_strike_outs",
+    }
     k_picks = [
         p for p in pitcher_picks
-        if p.get("market") == "player_strikeouts"
+        if (p.get("market") or p.get("market_key") or "") in PITCHER_K_MARKETS
         and p.get("grade") in ("A+", "A", "B+", "B")
     ]
 
@@ -414,10 +420,32 @@ def build_ml_parlays(pitcher_picks, game_lines, batter_picks=None):
         if not legs:
             continue
 
-        # ── Monte Carlo gate (replaces vibes score gate) ───────
-        mc_valid = _validate_sgp_package(legs)
-        if not mc_valid["go"]:
-            print(f"  [ml_parlay] {pick.get('player')} SGP rejected: {mc_valid['reason']}")
+        # Monte Carlo validation — reject packages below EV threshold
+        mc_go = True
+        try:
+            from slipiq_montecarlo import quick_validate_parlay
+            leg_probs = [
+                leg.get("true_prob") or (leg.get("confidence", 60) / 100.0)
+                for leg in legs
+            ]
+            leg_types = [leg.get("leg_type", "unknown") for leg in legs]
+            approx_decimal = 1.0
+            for leg in legs:
+                odds = leg.get("odds") or -115
+                approx_decimal *= (1 + 100/abs(odds)) if odds < 0 else (1 + odds/100)
+            mc = quick_validate_parlay(
+                leg_probs=leg_probs,
+                leg_types=leg_types,
+                payout_decimal=approx_decimal,
+                bankroll=500.0,
+            )
+            mc_go = mc.get("go", True)
+            if not mc_go:
+                print(f"  [ml_parlay] {pick.get('player')} SGP rejected by MC: {mc.get('reason')}")
+        except Exception:
+            pass
+
+        if not mc_go:
             continue
 
         game_packages.append({

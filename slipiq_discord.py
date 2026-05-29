@@ -180,6 +180,20 @@ def build_best_pick_embed(card: dict) -> dict:
         "inline": False,
     })
 
+    # Add Groq-generated reasoning if available
+    reasoning = ""
+    try:
+        from slipiq_writer import write_pick_reasoning
+        reasoning = write_pick_reasoning(card)
+    except Exception:
+        pass
+    if reasoning:
+        fields.append({
+            "name":   "💡 Why",
+            "value":  reasoning,
+            "inline": False,
+        })
+
     return {
         "title":       f"⚾ SlipIQ Pick — {player} Strikeouts",
         "description": f"*Best pick of the day — {datetime.now().strftime('%A, %B %d')}*",

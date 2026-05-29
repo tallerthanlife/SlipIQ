@@ -280,6 +280,17 @@ def run_poll(sport: str = SPORT_MLB, model_probs: dict | None = None) -> dict:
     else:
         print(f"  [scanner] No new +EV PrizePicks entries this poll")
 
+    eligible_legs = []
+    try:
+        from slipiq_ev_engine import prizepicks_leg_threshold
+        min_prob = prizepicks_leg_threshold(4) + 0.02
+        for prop in (props or []):
+            tp = prop.get("true_prob") or prop.get("fair_over_prob")
+            if tp and float(tp) >= min_prob:
+                eligible_legs.append(prop)
+    except Exception:
+        eligible_legs = []
+
     # Post PrizePicks entries if any were built
     try:
         from slipiq_prizepicks import build_pp_entry_with_expiry
