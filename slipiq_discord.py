@@ -91,6 +91,33 @@ def _grade_color(grade: str) -> int:
     }.get(grade, 0x888888)
 
 
+def _build_ev_field(card: dict) -> str:
+    ev_val    = card.get("ev")
+    ev_src    = card.get("ev_source", "none")
+    breakeven = card.get("breakeven", "")
+    reasoning = ""
+    try:
+        from slipiq_writer import write_pick_reasoning
+        reasoning = write_pick_reasoning(card)
+    except Exception:
+        pass
+
+    if ev_val is not None and ev_src == "ev_engine_pinnacle":
+        sign   = "+" if ev_val >= 0 else ""
+        ev_str = f"**{sign}{ev_val*100:.1f}%** edge vs Pinnacle no-vig"
+        if breakeven:
+            ev_str += f" | {breakeven}"
+    elif ev_val is not None:
+        sign   = "+" if ev_val >= 0 else ""
+        ev_str = f"{sign}{ev_val*100:.1f}% (unverified — no Pinnacle line yet)"
+    else:
+        ev_str = "Pinnacle line not posted yet"
+
+    if reasoning:
+        ev_str += f"\n{reasoning}"
+    return ev_str
+
+
 def build_best_pick_embed(card: dict) -> dict:
     """
     Rich embed for #daily-picks — best pick of the day.
@@ -156,43 +183,16 @@ def build_best_pick_embed(card: dict) -> dict:
             "inline": True,
         },
         {
+            "name":   "💡 Edge",
+            "value":  _build_ev_field(card),
+            "inline": False,
+        },
+        {
             "name": "💰 DK · Fanatics · PrizePicks",
             "value": book_line,
             "inline": False,
         },
     ]
-
-    # ── EV field ──────────────────────────────────────────────
-    ev_val = card.get("ev")
-    ev_src = card.get("ev_source", "none")
-    if ev_val is not None and ev_src == "ev_engine_pinnacle":
-        ev_display = f"**{'+' if ev_val >= 0 else ''}{ev_val*100:.1f}%** vs Pinnacle"
-        if card.get("breakeven"):
-            ev_display += f"\n{card['breakeven']}"
-    elif ev_val is not None:
-        ev_display = f"{'+' if ev_val >= 0 else ''}{ev_val*100:.1f}% (unverified)"
-    else:
-        ev_display = "Pinnacle line not posted yet"
-
-    fields.append({
-        "name":   "📈 Expected Value",
-        "value":  ev_display,
-        "inline": False,
-    })
-
-    # Add Groq-generated reasoning if available
-    reasoning = ""
-    try:
-        from slipiq_writer import write_pick_reasoning
-        reasoning = write_pick_reasoning(card)
-    except Exception:
-        pass
-    if reasoning:
-        fields.append({
-            "name":   "💡 Why",
-            "value":  reasoning,
-            "inline": False,
-        })
 
     return {
         "title":       f"⚾ SlipIQ Pick — {player} Strikeouts",
@@ -265,6 +265,18 @@ def build_morning_brief_embed(slate: dict) -> dict:
     else:
         status = "⏳ Waiting for full market"
 
+    brief_narrative = ""
+    try:
+        from slipiq_writer import write_morning_brief
+        post_list = slate.get("post_list", [])
+        if post_list:
+            brief_narrative = write_morning_brief(post_list)
+    except Exception:
+        pass
+
+    if brief_narrative:
+        status = f"{status}\n\n{brief_narrative}"
+
     return {
         "title":       f"☀️ SlipIQ Morning Brief — {datetime.now().strftime('%A, %B %d')}",
         "description": status,
@@ -306,6 +318,16 @@ def build_line_move_embed(player: str, old_line: float, new_line: float,
         "footer":    {"text": "SlipIQ Live Alerts"},
         "timestamp": datetime.utcnow().isoformat(),
     }
+
+
+def _build_sr_note(result: dict) -> str:
+    note = ""
+    try:
+        from slipiq_writer import write_pick_grade_note
+        note = write_pick_grade_note(result)
+    except Exception:
+        pass
+    return note if note else f"Result: {result.get('outcome', '?')}"
 
 
 def build_sharp_review_embed(player: str, pick_direction: str, line: float,
@@ -355,6 +377,20 @@ def build_sharp_review_embed(player: str, pick_direction: str, line: float,
             "inline": False,
         })
 
+    result_dict = {
+        "player":    player,
+        "actual_ks": actual_ks,
+        "line":      line,
+        "proj":      proj,
+        "outcome":   "HIT" if hit else "MISS",
+        "direction": pick_direction,
+    }
+    fields.append({
+        "name":   "📝 Analysis",
+        "value":  _build_sr_note(result_dict),
+        "inline": False,
+    })
+
     return {
         "title":       f"🔍 Sharp Review — {player}",
         "description": f"Grade: **{grade}** | {datetime.now().strftime('%B %d, %Y')}",
@@ -390,6 +426,15 @@ def post_morning_brief(slate: dict) -> bool:
     # Best pick card
     best = slate.get("best_pick")
     if best:
+        # Generate SGP narrative if applicable
+        try:
+            from slipiq_writer import write_best_pick_headline
+            headline = write_best_pick_headline(best)
+            if headline:
+                post_message(DISCORD_DAILY_PICKS_CHANNEL,
+                             content=f"⭐ **{headline}**")
+        except Exception:
+            pass
         pick_embed = build_best_pick_embed(best)
         return post_message(DISCORD_DAILY_PICKS_CHANNEL, embed=pick_embed)
 

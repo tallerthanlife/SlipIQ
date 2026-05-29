@@ -120,6 +120,7 @@ def reset_state_for_new_day(state: dict) -> dict:
         "slipiq_results.json",
         "orchestrator_state.json",
         "record.json",
+        "nba_record.json",
         "calibration_log.json",
         "sharp_benchmark_log.json",
         "propline_credits.json",
@@ -132,12 +133,17 @@ def reset_state_for_new_day(state: dict) -> dict:
 
     deleted = 0
     for f in CACHE_DIR.glob("*.json"):
-        if f.name not in protected and not f.name.startswith("batter_slate_"):
+        if f.name not in protected and not f.name.startswith("batter_slate_") \
+                and not f.name.startswith("closing_"):
             try:
                 f.unlink()
                 deleted += 1
             except Exception:
                 pass
+
+    # Also protect closing line cache files (contain CLV data)
+    for file in list(CACHE_DIR.glob("closing_*.json")):
+        pass  # closing files are protected — do not delete
 
     print(f"  [cache] Cleared {deleted} stale files.")
 
@@ -427,6 +433,16 @@ def _post_sgp_slips(ml_parlays: dict, channel: str, post_fn) -> None:
 
         lines.append("")
         lines.append("📚 DraftKings · Fanatics — verify lines before submitting")
+
+        try:
+            from slipiq_writer import write_sgp_narrative
+            mock_slip = {"legs": slip.get("legs", [])}
+            sgp_note = write_sgp_narrative(mock_slip)
+            if sgp_note:
+                lines.append("")
+                lines.append(f"💡 {sgp_note}")
+        except Exception:
+            pass
 
         content = "\n".join(lines)
         post_fn(channel, content=content[:2000])
@@ -836,6 +852,16 @@ def show_status() -> None:
                 print(f"    {'✅' if v else '❌'} {k}")
             else:
                 print(f"    ℹ️  {k} = {v}")
+    except Exception:
+        pass
+
+    try:
+        from slipiq_cache import api_tier_status
+        tiers = api_tier_status()
+        print("\n  API Tiers:")
+        print(f"    {'✅' if tiers['tier_1_parlayapi'] else '❌'} Tier 1: ParlayAPI (primary)")
+        print(f"    {'✅' if tiers['tier_2_propline'] else '❌'} Tier 2: Prop-Line (Pinnacle supplement)")
+        print(f"    {'✅' if tiers['tier_3_odds_keys'] > 0 else '❌'} Tier 3: Odds API ({tiers['tier_3_odds_keys']} keys)")
     except Exception:
         pass
 
