@@ -175,33 +175,61 @@ def run_main(state: dict, force_discord: bool = True) -> dict:
 
     try:
         # 1. Fresh Props Pull
-        from slipiq_parlayapi import fetch_props_raw, fetch_odds_raw, SPORT_MLB
+        from slipiq_parlayapi import fetch_props_raw, SPORT_MLB
+        from slipiq_game_lines import fetch_f5_ml_lines
         print("\n  [1] Refreshing prop lines (3 credits)...")
         fetch_props_raw(SPORT_MLB, force=True)
-        game_lines = fetch_odds_raw(SPORT_MLB) or []
+        game_lines = fetch_f5_ml_lines() or {}
 
         # 2. Run Individual Curation
         from slipiq_curate import run_curation
         print("  [2] Running individual curation pipeline...")
-        curation_result = run_curation(post_to_discord=force_discord)
+        curation_result = run_curation(post_discord=force_discord)
 
         # 3. Build & Post Correlated SGP Parlays (New!)
-        from slipiq_pitcher_model import run_pitcher_model
+        from slipiq_pitcher_model import run_all_models
         from slipiq_batter_model import run_batter_model
-        from slipiq_ml_parlay import build_ml_parlays, build_ml_parlay_embeds
-        from slipiq_discord import post_message, CHANNEL_TEAM_PARLAY
+        from slipiq_ml_parlay import build_ml_parlays
+        from slipiq_discord import post_message
+        from slipiq_env import CHANNEL_TEAM_PARLAY
 
         print("  [3] Building Correlated SGP Parlays...")
-        pitcher_picks = run_pitcher_model(min_confidence=60)
+        pitcher_picks = run_all_models(min_confidence=60) if hasattr(__import__('slipiq_pitcher_model'), 'run_all_models') else []
         batter_picks = run_batter_model(min_confidence=60)
         
         ml_parlays = build_ml_parlays(pitcher_picks, game_lines, batter_picks)
         
         if ml_parlays and force_discord:
-            embeds = build_ml_parlay_embeds(ml_parlays)
-            for embed in embeds:
-                post_message(CHANNEL_TEAM_PARLAY, embed=embed)
-                print("  [parlay] Posted correlated slip to Discord")
+            from slipiq_discord import post_message
+            from slipiq_env import CHANNEL_TEAM_PARLAY
+            if ml_parlays:
+                slip1 = ml_parlays.get("slip_1")
+                slip2 = ml_parlays.get("slip_2")
+                for slip in [slip1, slip2]:
+                    if slip and slip.get("legs"):
+                        legs_text = "\n".join(
+                            f"  • {leg.get('label', '')} | {leg.get('confidence', 0)}%"
+                            for leg in slip.get("legs", [])[:8]
+                        )
+                        content = f"🎯 **SlipIQ SGP — {slip.get('total_legs', 0)} Legs**\n{legs_text}"
+                        post_message(CHANNEL_TEAM_PARLAY, content=content[:2000])
+                        print("  [parlay] Posted correlated slip to Discord")
+
+        # Start PrizePicks intraday scanner as background job
+        try:
+            from slipiq_propline_scanner import start_scanner
+            import threading
+            scanner_thread = threading.Thread(
+                target=start_scanner,
+                kwargs={"block": False},
+                daemon=True,
+                name="pp_scanner"
+            )
+            if not any(t.name == "pp_scanner" for t in threading.enumerate()):
+                scanner_thread.start()
+                print("  [scanner] PrizePicks intraday scanner started")
+        except Exception as scan_err:
+            print(f"  [scanner] Scanner start skipped: {scan_err}")
 
         picks_posted = curation_result.get("post_count", 0)
         state["main_done"]    = True
@@ -236,7 +264,7 @@ def run_confirm(state: dict) -> dict:
 
         from slipiq_curate import run_curation
         print("  [2] Running confirm curation...")
-        result = run_curation(post_to_discord=True)
+        result = run_curation(post_discord=True)
 
         new_picks = result.get("post_count", 0)
         state["confirm_done"]  = True
@@ -399,23 +427,25 @@ def run_scheduler():
                 state = run_confirm(state)
                 save_state(state)
 
-            # NBA main — 11:00am
-            elif should_run(SCHEDULE["nba_main"], state.get("nba_main_done", False)):
-                print(f"\n[{now_str}] Firing NBA main run...")
-                state = run_nba_main(state)
-                save_state(state)
+            from slipiq_env import NBA_SEASON_ACTIVE
+            if NBA_SEASON_ACTIVE:
+                # NBA main — 11:00am
+                if should_run(SCHEDULE["nba_main"], state.get("nba_main_done", False)):
+                    print(f"\n[{now_str}] Firing NBA main run...")
+                    state = run_nba_main(state)
+                    save_state(state)
 
-            # NBA confirm — 11:45am
-            elif should_run(SCHEDULE["nba_confirm"], state.get("nba_confirm_done", False)):
-                print(f"\n[{now_str}] Firing NBA confirm run...")
-                state = run_nba_confirm_run(state)
-                save_state(state)
+                # NBA confirm — 11:45am
+                elif should_run(SCHEDULE["nba_confirm"], state.get("nba_confirm_done", False)):
+                    print(f"\n[{now_str}] Firing NBA confirm run...")
+                    state = run_nba_confirm_run(state)
+                    save_state(state)
 
-            # NBA breakout — 4:30pm
-            elif should_run(SCHEDULE["nba_breakout"], state.get("nba_breakout_done", False)):
-                print(f"\n[{now_str}] Firing NBA breakout scan...")
-                state = run_nba_breakout(state)
-                save_state(state)
+                # NBA breakout — 4:30pm
+                elif should_run(SCHEDULE["nba_breakout"], state.get("nba_breakout_done", False)):
+                    print(f"\n[{now_str}] Firing NBA breakout scan...")
+                    state = run_nba_breakout(state)
+                    save_state(state)
 
             # Sharp Review — 11pm
             elif should_run(SCHEDULE["review"], state["review_done"]):

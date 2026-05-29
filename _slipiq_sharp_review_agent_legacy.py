@@ -1,3 +1,5 @@
+# ARCHIVED — superseded by slipiq_sharp_review.py
+# This file is kept for reference only. Do not import from it.
 """
 SlipIQ Sharp Review Agent
 Auto-settles pending picks from MLB box scores and posts debrief to Discord.
