@@ -24,6 +24,7 @@ from slipiq_env import (
     DISCORD_BOT_TOKEN,
     DISCORD_DAILY_PICKS_CHANNEL,
     DISCORD_LIVE_ALERTS_CHANNEL,
+    DISCORD_PRIZEPICKS_CHANNEL,
     DISCORD_SHARP_REVIEW_CHANNEL,
 )
 
@@ -117,9 +118,6 @@ def build_best_pick_embed(card: dict) -> dict:
     # Direction emoji
     dir_emoji = "⬆️" if direction == "OVER" else "⬇️"
 
-    # EV tag
-    ev_tag = f" ✅ +EV confirmed" if ev_conf else ""
-
     # Recent form string
     form_str = " → ".join(str(k) for k in k_list) if k_list else "N/A"
 
@@ -154,7 +152,7 @@ def build_best_pick_embed(card: dict) -> dict:
         },
         {
             "name": "🎯 Confidence",
-            "value": f"**{confidence}%** | Grade: **{grade}**{ev_tag}",
+            "value": f"**{confidence}%** | Grade: **{grade}**",
             "inline": True,
         },
         {
@@ -163,6 +161,32 @@ def build_best_pick_embed(card: dict) -> dict:
             "inline": False,
         },
     ]
+
+    # ── EV field (real math) ───────────────────────────────────
+    ev_val    = card.get("ev")
+    ev_src    = card.get("ev_source", "none")
+    breakeven = card.get("breakeven")
+
+    if ev_val is not None and ev_src == "ev_engine_pinnacle":
+        ev_sign  = "+" if ev_val >= 0 else ""
+        ev_str   = f"**{ev_sign}{ev_val*100:.1f}%** edge vs Pinnacle"
+        if breakeven:
+            ev_str += f"\n{breakeven}"
+        ev_emoji = "✅" if ev_val >= 0.03 else ("⚠️" if ev_val >= 0 else "❌")
+    elif ev_val is not None and ev_src == "parlayapi_only":
+        ev_str   = f"{'+' if ev_val >= 0 else ''}{ev_val*100:.1f}% (unverified — no Pinnacle)"
+        ev_emoji = "⚠️"
+        if breakeven:
+            ev_str += f"\n{breakeven}"
+    else:
+        ev_str   = "Unconfirmed — Pinnacle line not posted yet"
+        ev_emoji = "⏳"
+
+    fields.append({
+        "name":   f"{ev_emoji} Expected Value",
+        "value":  ev_str,
+        "inline": False,
+    })
 
     return {
         "title":       f"⚾ SlipIQ Pick — {player} Strikeouts",
@@ -197,9 +221,17 @@ def build_morning_brief_embed(slate: dict) -> dict:
         direction = card.get("direction", "").upper()
         line      = card.get("line")
         conf      = card.get("confidence", 0)
-        ev_conf   = card.get("ev_confirmed", False)
-        ev_tag    = " ✅" if ev_conf else ""
-        bk_row = card.get("books_row", "")
+        ev_conf = card.get("ev_confirmed", False)
+        ev_val  = card.get("ev")
+        ev_src  = card.get("ev_source", "none")
+        if ev_val is not None and ev_src == "ev_engine_pinnacle":
+            ev_tag = f" | EV {'+' if ev_val >= 0 else ''}{ev_val*100:.1f}%"
+        elif ev_conf:
+            ev_tag = " ✅"
+        else:
+            ev_tag = ""
+
+        bk_row  = card.get("books_row", "")
         bk_snip = f"\n   {bk_row}" if bk_row else ""
         pick_lines.append(
             f"`[{grade}]` {player} — {direction} {line} | {conf}%{ev_tag}{bk_snip}"
@@ -562,6 +594,48 @@ def run_discord_post(slate: dict = None) -> bool:
     post_count = slate.get("post_count", 0)
     print(f"\n  [discord] Posting slate: {post_count} picks to #daily-picks")
     return post_morning_brief(slate)
+
+
+def post_prizepicks_entry(entry: dict) -> bool:
+    """
+    Post a PrizePicks intraday entry to DISCORD_PRIZEPICKS_CHANNEL.
+    Called by slipiq_propline_scanner after intraday_scanner() returns entries.
+    """
+    try:
+        from slipiq_prizepicks import format_pp_entry_discord
+        content = format_pp_entry_discord(entry)
+        return post_message(DISCORD_PRIZEPICKS_CHANNEL, content=content[:2000])
+    except Exception as e:
+        print(f"  [discord] PrizePicks post error: {e}")
+        return False
+
+
+def post_lotto_slip(slip: dict) -> bool:
+    """
+    Post a pitcher lotto slip to CHANNEL_TEAM_PARLAY.
+    Called by slipiq_independent_parlay after build_pitcher_lotto_slip().
+    """
+    try:
+        from slipiq_independent_parlay import format_lotto_discord
+        content = format_lotto_discord(slip)
+        return post_message(CHANNEL_TEAM_PARLAY, content=content[:2000])
+    except Exception as e:
+        print(f"  [discord] Lotto slip post error: {e}")
+        return False
+
+
+def post_mlrl_parlay(slip: dict) -> bool:
+    """
+    Post an independent ML/RL parlay to CHANNEL_TEAM_PARLAY.
+    Called by slipiq_independent_parlay after build_mlrl_parlay().
+    """
+    try:
+        from slipiq_independent_parlay import format_mlrl_discord
+        content = format_mlrl_discord(slip)
+        return post_message(CHANNEL_TEAM_PARLAY, content=content[:2000])
+    except Exception as e:
+        print(f"  [discord] ML/RL parlay post error: {e}")
+        return False
 
 
 # ═════════════════════════════════════════

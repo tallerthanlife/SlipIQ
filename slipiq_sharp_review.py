@@ -223,26 +223,110 @@ def fetch_nba_actual_stat(
         return None
 
 
-def fetch_closing_line(player_name: str, market_key: str, game_date: str, sport_key: str = SPORT_MLB) -> float | None:
+def fetch_closing_line(
+    player_name: str,
+    market:      str,
+    game_date:   str,
+    sport_key:   str = SPORT_MLB,
+) -> dict | None:
     """
-    Fetch closing line from ParlayAPI historical endpoint.
-    Used for CLV calculation.
+    Fetch Pinnacle closing line for a player/market/date.
+    Used for CLV calculation in Sharp Review.
+
+    Returns:
+        {
+            "over_price":  int | None,
+            "under_price": int | None,
+            "line":        float | None,
+        }
+        or None if no data found.
+
+    Source: slipiq_parlayapi.fetch_historical_props() — 5 credits/call.
+    Result cached per day so Sharp Review only costs 5 credits once.
     """
+    from pathlib import Path
+    import json as _json
+
+    cache_dir  = Path("cache")
+    cache_path = cache_dir / f"closing_lines_{game_date.replace('-', '')}.json"
+
+    closing_cache: dict = {}
+    if cache_path.exists():
+        try:
+            closing_cache = _json.loads(cache_path.read_text())
+        except (ValueError, OSError):
+            pass
+
+    cache_key = f"{player_name.lower().strip()}_{market}"
+    if cache_key in closing_cache:
+        return closing_cache[cache_key] or None
+
     try:
-        historical = fetch_historical(sport_key, date=game_date)
+        from slipiq_parlayapi import fetch_historical_props, SPORT_MLB as _SPORT_MLB
+        historical = fetch_historical_props(_SPORT_MLB, game_date=game_date)
+
         if not historical:
+            closing_cache[cache_key] = None
+            cache_path.write_text(_json.dumps(closing_cache, indent=2))
             return None
 
-        for entry in historical:
-            if (entry.get("player", "").lower() == player_name.lower() and
-                    entry.get("market_key", "").lower() == market_key.lower() and
-                    entry.get("bookmaker", "").lower() == "pinnacle"):
-                return entry.get("line")
+        player_norm = player_name.lower().strip()
+        result      = None
 
-        return None
+        for prop in historical:
+            prop_player = (prop.get("player_name") or prop.get("player") or "").lower().strip()
+            prop_market = (prop.get("market_key")  or prop.get("market")  or "").lower()
+
+            if prop_player != player_norm:
+                continue
+            if market and prop_market and market not in prop_market and prop_market not in market:
+                continue
+
+            for book_entry in (prop.get("books") or prop.get("bookmakers") or []):
+                book_key = (book_entry.get("key") or book_entry.get("book") or "").lower()
+                if "pinnacle" not in book_key:
+                    continue
+
+                markets_list = book_entry.get("markets") or [book_entry]
+                for mkt in markets_list:
+                    outcomes = mkt.get("outcomes") or []
+                    if not outcomes and mkt.get("over_price"):
+                        outcomes = [mkt]
+
+                    over_price  = None
+                    under_price = None
+                    line_val    = mkt.get("line") or mkt.get("point")
+
+                    for outcome in outcomes:
+                        name  = (outcome.get("name") or "").lower()
+                        price = outcome.get("price")
+                        pt    = outcome.get("point")
+                        if pt is not None:
+                            line_val = pt
+                        if "over" in name and price:
+                            over_price = int(price)
+                        elif "under" in name and price:
+                            under_price = int(price)
+
+                    if over_price or under_price:
+                        result = {
+                            "over_price":  over_price,
+                            "under_price": under_price,
+                            "line":        float(line_val) if line_val else None,
+                        }
+                        break
+                if result:
+                    break
+
+            if result:
+                break
+
+        closing_cache[cache_key] = result
+        cache_path.write_text(_json.dumps(closing_cache, indent=2))
+        return result
 
     except Exception as e:
-        print(f"  [sharp] Closing line fetch failed: {e}")
+        print(f"  [sharp_review] fetch_closing_line error for {player_name}: {e}")
         return None
 
 
@@ -447,19 +531,27 @@ def run_nba_sharp_review(game_date: str = None, post_to_discord: bool = True) ->
             continue
 
         closing_line = fetch_closing_line(player, market_key, game_date, sport_key=SPORT_NBA)
-        result = grade_nba_pick(card, actual, closing_line)
+        closing_line_val = closing_line.get("line") if closing_line else None
+        result = grade_nba_pick(card, actual, closing_line_val)
         results.append(result)
         record = update_record(record, result)
         print(f"  Result : {result['outcome']} ({actual} vs {card.get('line')} line)")
 
         if post_to_discord and DISCORD_SHARP_REVIEW_CHANNEL:
+            nba_direction = card.get("direction", "over")
+            nba_closing_price = None
+            if closing_line:
+                nba_closing_price = (
+                    closing_line.get("over_price") if nba_direction == "over"
+                    else closing_line.get("under_price")
+                )
             post_message(
                 DISCORD_SHARP_REVIEW_CHANNEL,
                 content=f"🏀 **NBA Sharp Review** — {player}",
             )
             post_sharp_review(
                 player=player,
-                pick_direction=card.get("direction"),
+                pick_direction=nba_direction,
                 line=card.get("line"),
                 actual_ks=int(actual) if actual == int(actual) else actual,
                 proj=card.get("projection"),
@@ -467,7 +559,7 @@ def run_nba_sharp_review(game_date: str = None, post_to_discord: bool = True) ->
                 clv=result.get("clv"),
                 book=(card.get("best_book") or {}).get("book"),
                 book_price=(card.get("best_book") or {}).get("price"),
-                closing_price=int(closing_line) if closing_line else None,
+                closing_price=nba_closing_price,
             )
 
     save_record(record, NBA_RECORD_PATH)
@@ -537,9 +629,39 @@ def run_sharp_review(game_date: str = None, post_to_discord: bool = True, sport:
         # Fetch closing line for CLV
         closing_line = fetch_closing_line(player, "player_pitcher_strikeouts", game_date)
 
-        # Grade it
-        result = grade_pick(card, actual_ks, closing_line)
+        # Grade it — pass the prop line value for CLV diff calculation
+        closing_line_val = closing_line.get("line") if closing_line else None
+        result = grade_pick(card, actual_ks, closing_line_val)
         results.append(result)
+
+        # Log to calibration tracker with CLV
+        try:
+            from slipiq_calibration import log_result_by_player
+            from slipiq_ev_engine import closing_line_value
+
+            clv_pct = None
+            if closing_line and card.get("best_book"):
+                bet_price     = (card.get("best_book") or {}).get("price")
+                closing_price_log = (
+                    closing_line.get("over_price")  if direction == "over"
+                    else closing_line.get("under_price")
+                ) if closing_line else None
+
+                if bet_price and closing_price_log:
+                    clv_result = closing_line_value(bet_price, closing_price_log)
+                    clv_pct    = clv_result["clv_pct"]
+
+            log_result_by_player(
+                player     = player,
+                market     = card.get("market", "player_pitcher_strikeouts"),
+                direction  = direction,
+                game_date  = game_date,
+                result     = result["outcome"],
+                actual_val = actual_ks,
+                clv        = clv_pct,
+            )
+        except Exception as e:
+            print(f"  [calibration] log error: {e}")
 
         # Update record
         record = update_record(record, result)
@@ -552,6 +674,12 @@ def run_sharp_review(game_date: str = None, post_to_discord: bool = True, sport:
 
         # Post to Discord
         if post_to_discord:
+            closing_price_discord = None
+            if closing_line:
+                closing_price_discord = (
+                    closing_line.get("over_price") if direction == "over"
+                    else closing_line.get("under_price")
+                )
             post_sharp_review(
                 player        = player,
                 pick_direction = direction,
@@ -562,7 +690,7 @@ def run_sharp_review(game_date: str = None, post_to_discord: bool = True, sport:
                 clv           = result["clv"],
                 book          = book_name,
                 book_price    = book_price,
-                closing_price = int(closing_line) if closing_line else None,
+                closing_price = closing_price_discord,
             )
 
     # Save updated record

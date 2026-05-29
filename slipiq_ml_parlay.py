@@ -232,6 +232,49 @@ def build_game_sgp(pitcher_pick, batter_picks, game_line):
             "score":      confidence - 5,
         })
 
+    # ── Leg: F3 ML (compare against F5 — pick higher EV) ─────
+    f3_ml_odds  = None
+    f5_ml_odds  = ml_odds
+
+    f3_data = game_line.get("f3", {}) or {}
+    if f3_data:
+        f3_ml_odds = f3_data.get("ml_home") if is_home else f3_data.get("ml_away")
+
+    best_fn_market = "f5_ml"
+    best_fn_odds   = f5_ml_odds
+
+    if f3_ml_odds and f5_ml_odds:
+        try:
+            from slipiq_ev_engine import no_vig_prob
+            pin_home = game_line.get("pinnacle_home_ml")
+            pin_away = game_line.get("pinnacle_away_ml")
+            if pin_home and pin_away:
+                nv = no_vig_prob(
+                    pin_home if is_home else pin_away,
+                    pin_away if is_home else pin_home,
+                )
+                true_prob_ml = nv["true_over"]
+                ev_f5 = (true_prob_ml * (1 + abs(f5_ml_odds)/100 if f5_ml_odds < 0
+                         else 1 + f5_ml_odds/100)) - 1
+                ev_f3 = (true_prob_ml * (1 + abs(f3_ml_odds)/100 if f3_ml_odds < 0
+                         else 1 + f3_ml_odds/100)) - 1
+                if ev_f3 > ev_f5 + 0.005:
+                    best_fn_market = "f3_ml"
+                    best_fn_odds   = f3_ml_odds
+        except Exception:
+            pass
+    elif f3_ml_odds and not f5_ml_odds:
+        best_fn_market = "f3_ml"
+        best_fn_odds   = f3_ml_odds
+
+    for leg in legs:
+        if leg.get("leg_type") in ("f5_ml", "f3_ml"):
+            leg["leg_type"] = best_fn_market
+            leg["label"]    = leg["label"].replace("F5 ML", best_fn_market.upper().replace("_", " "))
+            leg["prop"]     = leg["prop"].replace("First 5", "First 3" if best_fn_market == "f3_ml" else "First 5")
+            leg["odds"]     = best_fn_odds or leg["odds"]
+            break
+
     return legs
 
 
@@ -253,6 +296,56 @@ def _batter_on_team(batter_pick, team_name):
 
 
 # ─── Cross-Game Combination ───────────────────────────────────
+
+def _validate_sgp_package(legs: list[dict]) -> dict:
+    """
+    Validate a same-game SGP package via Monte Carlo before posting.
+    Returns quick_validate_parlay() result: {"go": bool, "reason": str, ...}
+
+    Uses leg_type to look up correlation matrix.
+    Falls back to independent simulation if montecarlo import fails.
+    """
+    try:
+        from slipiq_montecarlo import quick_validate_parlay
+
+        leg_probs = []
+        leg_types = []
+        for leg in legs:
+            tp = (
+                leg.get("true_prob") or
+                (leg.get("confidence", 60) / 100.0)
+            )
+            leg_probs.append(max(0.35, min(0.95, float(tp))))
+            leg_types.append(leg.get("leg_type", "unknown"))
+
+        if not leg_probs:
+            return {"go": False, "reason": "no legs"}
+
+        approx_decimal = 1.0
+        for leg in legs:
+            odds_american = leg.get("odds") or -115
+            if odds_american > 0:
+                approx_decimal *= 1 + (odds_american / 100)
+            else:
+                approx_decimal *= 1 + (100 / abs(odds_american))
+
+        result = quick_validate_parlay(
+            leg_probs      = leg_probs,
+            leg_types      = leg_types,
+            payout_decimal = approx_decimal,
+            bankroll       = 500.0,
+        )
+        return result
+
+    except Exception:
+        joint = 1.0
+        for leg in legs:
+            tp = leg.get("true_prob") or (leg.get("confidence", 60) / 100.0)
+            joint *= float(tp)
+        if joint >= 0.05:
+            return {"go": True, "reason": f"joint_prob={joint:.3f} (fallback)", "ev": joint - 1}
+        return {"go": False, "reason": f"joint_prob={joint:.3f} too low (fallback)"}
+
 
 def combine_game_packages(game_packages):
     if not game_packages:
@@ -321,13 +414,20 @@ def build_ml_parlays(pitcher_picks, game_lines, batter_picks=None):
         if not legs:
             continue
 
+        # ── Monte Carlo gate (replaces vibes score gate) ───────
+        mc_valid = _validate_sgp_package(legs)
+        if not mc_valid["go"]:
+            print(f"  [ml_parlay] {pick.get('player')} SGP rejected: {mc_valid['reason']}")
+            continue
+
         game_packages.append({
-            "game":     game_key,
-            "score":    score,
-            "legs":     legs,
-            "pitcher":  pick.get("player"),
-            "proj":     pick.get("projection", 0),
-            "conf":     pick.get("confidence", 0),
+            "game":    game_key,
+            "score":   score,
+            "legs":    legs,
+            "pitcher": pick.get("player"),
+            "proj":    pick.get("projection", 0),
+            "conf":    pick.get("confidence", 0),
+            "mc":      mc_valid,
         })
         used_games.add(game_key)
 

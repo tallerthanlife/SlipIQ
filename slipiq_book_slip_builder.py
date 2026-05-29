@@ -44,25 +44,55 @@ def _prop_short(card: dict) -> str:
 
 
 def card_to_slip_leg(card: dict, n: int) -> dict:
+    """
+    Convert a pick card to a slip leg dict.
+    Includes ev, true_prob, pinnacle prices for montecarlo validation.
+    """
     direction = (card.get("direction") or "over").upper()
-    player = card.get("player", "Unknown")
-    line = card.get("line", 0)
-    conf = card.get("confidence", 0)
-    grade = card.get("grade") or calc_grade(conf)
-    review = card.get("slip_review") or review_pick(card_to_review_pick(card))
+    player    = card.get("player", "Unknown")
+    line      = card.get("line", 0)
+    conf      = card.get("confidence", 0)
+    grade     = card.get("grade") or calc_grade(conf)
+    market    = card.get("market", "")
+    review    = card.get("slip_review") or review_pick(card_to_review_pick(card))
+
+    prop_map = {
+        "player_pitcher_strikeouts": "Strikeouts",
+        "player_strikeouts":         "Strikeouts",
+        "player_hits":               "Hits",
+        "player_total_bases":        "Total Bases",
+        "player_home_runs":          "Home Runs",
+        "player_rbis":               "RBIs",
+    }
+    prop_label = prop_map.get(market, _prop_short(card))
 
     return {
-        "n": n,
-        "label": f"{player} {_prop_short(card)} {direction} {line}",
-        "grade": grade,
-        "confidence": conf,
-        "books_row": card.get("books_row") or per_book_row(card),
-        "ev_confirmed": bool(card.get("ev_confirmed")),
-        "game": f"{card.get('away_team', '?')} @ {card.get('home_team', '?')}",
-        "sport": card.get("sport", "mlb"),
-        "slip_review": review,
-        "review_score": review.get("score", 0),
-        "_card": card,
+        "n":             n,
+        "leg_type":      "pitcher_k" if "strikeout" in market else "batter",
+        "label":         f"{player} {prop_label} {direction} {line}",
+        "player":        player,
+        "market":        market,
+        "prop":          f"{prop_label} {direction} {line}",
+        "grade":         grade,
+        "confidence":    conf,
+        "direction":     direction.lower(),
+        "line":          line,
+        "books_row":     card.get("books_row") or per_book_row(card),
+        "ev_confirmed":  bool(card.get("ev_confirmed")),
+        "game":          f"{card.get('away_team', '?')} @ {card.get('home_team', '?')}",
+        "sport":         card.get("sport", "mlb"),
+        "slip_review":   review,
+        "review_score":  review.get("score", 0),
+        # montecarlo / slip_router fields
+        "ev":            card.get("ev"),
+        "ev_source":     card.get("ev_source", "none"),
+        "true_prob":     card.get("true_prob"),
+        "pinnacle_over": card.get("pinnacle_over"),
+        "pinnacle_under":card.get("pinnacle_under"),
+        "home_team":     card.get("home_team"),
+        "away_team":     card.get("away_team"),
+        "books_display": card.get("books_display"),
+        "_card":         card,
     }
 
 
@@ -87,17 +117,55 @@ def per_book_row(card: dict) -> str:
 
 
 def per_book_output(slip: dict) -> dict:
-    """Attach per-book table rows to each leg."""
-    legs = []
-    for leg in slip.get("legs") or []:
-        updated = dict(leg)
+    """
+    Show all books side-by-side for each leg.
+    Now includes EV % and breakeven for each book line.
+    💰 = plus-money | EV shown when real Pinnacle data available.
+    """
+    if not slip or not slip.get("legs"):
+        return slip
+
+    for leg in slip.get("legs", []):
+        books_display = leg.get("books_display") or {}
         card = leg.get("_card") or {}
-        if card:
-            updated["books_row"] = per_book_row(card)
-        legs.append(updated)
-    out = dict(slip)
-    out["legs"] = legs
-    return out
+        if not books_display and card:
+            books_display = card.get("books_display") or {}
+        if not books_display:
+            continue
+
+        pin_over  = leg.get("pinnacle_over")  or (card.get("pinnacle_over")  if card else None)
+        pin_under = leg.get("pinnacle_under") or (card.get("pinnacle_under") if card else None)
+        direction = (leg.get("direction") or card.get("direction") or "over").lower()
+
+        book_parts = []
+        for label, bk in books_display.items():
+            price = bk.get("price")
+            if price is None:
+                continue
+
+            price_str  = f"+{price}" if price > 0 else str(price)
+            money_flag = " 💰" if price > 0 else ""
+
+            ev_str = ""
+            be_str = ""
+            if pin_over and pin_under:
+                try:
+                    from slipiq_ev_engine import assess_leg
+                    result = assess_leg(pin_over, pin_under, price, direction)
+                    ev_val = result.get("ev")
+                    if ev_val is not None:
+                        ev_str = f" EV {'+' if ev_val >= 0 else ''}{ev_val*100:.1f}%"
+                    be_val = result.get("breakeven")
+                    if be_val is not None:
+                        be_str = f" (BE {be_val*100:.1f}%)"
+                except Exception:
+                    pass
+
+            book_parts.append(f"{label} {price_str}{money_flag}{ev_str}{be_str}")
+
+        leg["books_row_ev"] = " | ".join(book_parts)
+
+    return slip
 
 
 def availability_check(slip: dict, book: str) -> dict | None:
@@ -154,6 +222,39 @@ def _ml_parlay_legs_to_slip(legs: list[dict], title: str) -> dict | None:
     }
     slip.update(calc_slip_grade(slip))
     return slip
+
+
+def _batter_on_team(batter_pick: dict, team_name: str) -> bool:
+    """
+    Check if batter plays for the given team.
+    Uses slipiq_player_ids.is_batter_on_team() for reliable matching.
+    Falls back to string matching if player not in lookup table.
+    """
+    if not team_name:
+        return False
+
+    player_name = batter_pick.get("player", "")
+
+    try:
+        from slipiq_player_ids import is_batter_on_team, get_team
+        result = is_batter_on_team(player_name, team_name)
+        if result:
+            return True
+        player_team = get_team(player_name)
+        if player_team is not None:
+            return False
+    except Exception:
+        pass
+
+    batter_team = batter_pick.get("team", "") or batter_pick.get("home_team", "")
+    team_lower  = team_name.lower()
+    if not batter_team:
+        return False
+    team_words = [w for w in team_lower.split() if len(w) > 3]
+    for word in team_words:
+        if word in batter_team.lower():
+            return True
+    return False
 
 
 def build_mixed_slip(pool: list[dict], max_legs: int = MAX_SLIP_LEGS) -> dict | None:

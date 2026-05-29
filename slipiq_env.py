@@ -96,6 +96,7 @@ DISCORD_SHARP_REVIEW_CHANNEL = _get(
 )
 
 CHANNEL_SLIPIQ_CHAT = _get("CHANNEL_SLIPIQ_CHAT")
+DISCORD_PRIZEPICKS_CHANNEL = _get("DISCORD_PRIZEPICKS_CHANNEL")
 
 # ─── Pipeline tuning (optional — safe defaults if omitted) ────
 SLIPIQ_TOP_PICKS = _get_int("SLIPIQ_TOP_PICKS", 0)
