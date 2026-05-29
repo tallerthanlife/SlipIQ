@@ -208,8 +208,16 @@ def confirm_ev(card: dict) -> dict:
             pass
 
     # Fallback: use parlayapi ev_over/ev_under (less accurate — no Pinnacle)
-    ev_val = card.get("ev_value") or card.get("ev")
+    # Also check ev_over/ev_under directly from the prop aggregation
+    ev_val = (
+        card.get("ev_value") or
+        card.get("ev") or
+        card.get("ev_over") or
+        card.get("ev_under")
+    )
     if ev_val is not None:
+        card["ev"]           = round(float(ev_val), 4)
+        card["ev_value"]     = round(float(ev_val), 4)
         card["ev_confirmed"] = float(ev_val) >= MIN_EV_GATE
         card["ev_source"]    = "parlayapi_only"
         card["no_pinnacle"]  = True

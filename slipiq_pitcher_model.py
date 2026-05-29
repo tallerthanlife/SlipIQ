@@ -367,6 +367,7 @@ def build_pick_card(
         "signal":        edge.get("signal"),
         "confidence":    confidence,
         "ev_value":      edge.get("ev_value"),
+        "ev":            edge.get("ev_value"),
         "ev_confirmed":  edge.get("ev_confirmed"),
 
         # Book info — action books only on cards
@@ -380,6 +381,12 @@ def build_pick_card(
         "trend":         trend,
         "recent_k_list": proj.get("recent_k_list"),
         "flags":         flags,
+
+        # Pinnacle anchors (top-level for EV engine access)
+        "pinnacle_over":  pinnacle.get("over_price")  if pinnacle else None,
+        "pinnacle_under": pinnacle.get("under_price") if pinnacle else None,
+        "pinnacle_line":  pinnacle.get("line")         if pinnacle else None,
+        "no_pinnacle":    pinnacle is None or not pinnacle.get("over_price"),
 
         # Operator only (never post to Discord)
         "_internal": {
@@ -417,6 +424,37 @@ def run_pitcher_model(sport_key: str = SPORT_MLB) -> list[dict]:
     all_props = get_all_props(sport_key)
     k_props   = all_props["pitcher_strikeouts"]
     agg       = aggregate_by_player(k_props)
+
+    # Supplement Pinnacle strikeout lines via Odds API failsafe
+    # Runs only when Pinnacle is absent from parlayapi response
+    missing_pinnacle = [
+        player for (player, market), data in agg.items()
+        if market == "player_pitcher_strikeouts"
+        and not data.get("pinnacle")
+    ]
+    if missing_pinnacle:
+        try:
+            from slipiq_odds_supplement import fetch_odds_api_strikeout_props
+            supplement = fetch_odds_api_strikeout_props(
+                players_needed=set(missing_pinnacle)
+            )
+            if supplement:
+                from slipiq_parlayapi import aggregate_by_player as _agg
+                supp_agg = _agg(supplement)
+                # Inject Pinnacle lines into existing aggregation
+                for key, supp_data in supp_agg.items():
+                    if key in agg and supp_data.get("pinnacle"):
+                        agg[key]["pinnacle"]        = supp_data["pinnacle"]
+                        agg[key]["ev_over"]         = supp_data.get("ev_over")
+                        agg[key]["ev_under"]        = supp_data.get("ev_under")
+                        agg[key]["fair_over_prob"]  = supp_data.get("fair_over_prob")
+                        agg[key]["fair_under_prob"] = supp_data.get("fair_under_prob")
+                covered = sum(1 for d in agg.values() if d.get("pinnacle"))
+                print(f"    Pinnacle supplement: {len(supplement)} props → "
+                      f"{covered} players now have Pinnacle lines")
+        except Exception as e:
+            print(f"    [supplement] Pinnacle injection skipped: {e}")
+
     print(f"    {len(agg)} pitcher/market combos found")
 
     if not agg:
