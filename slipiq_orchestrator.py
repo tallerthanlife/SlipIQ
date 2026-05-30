@@ -815,6 +815,9 @@ def run_scheduler() -> None:
     print("\nSchedule:")
     for name, t in SCHEDULE.items():
         print(f"  {t} AZ — {name}")
+    print("\nRegistered jobs:")
+    for name, t in SCHEDULE.items():
+        print(f"  [scheduler] Job: {name} | Fires at: {t} AZ")
     print("\nPress Ctrl+C to stop\n")
 
     # Initialize game-aware slate clock
@@ -1134,6 +1137,13 @@ if __name__ == "__main__":
                 time.sleep(5)
         except KeyboardInterrupt:
             _stop_pp_scanner()
+
+    elif "--scrape-now" in args:
+        print("=== MANUAL SCRAPE RUN ===")
+        state = load_state()
+        run_nightly_scrape(state)
+        print("=== SCRAPE COMPLETE ===")
+        sys.exit(0)
 
     else:
         # Default: run full pipeline now
