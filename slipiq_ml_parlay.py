@@ -366,8 +366,12 @@ def combine_game_packages(game_packages):
 # ─── Main Builder ─────────────────────────────────────────────
 
 def build_ml_parlays(pitcher_picks, game_lines, batter_picks=None):
-    if not pitcher_picks or not game_lines:
-        return None
+    if not pitcher_picks:
+        print("  [sgp] No pitcher picks — skipping SGP build")
+        return {}
+    if not game_lines:
+        print("  [sgp] No game lines — skipping SGP build")
+        return {}
 
     batter_picks = batter_picks or []
     game_index = {}

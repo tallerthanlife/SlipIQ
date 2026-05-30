@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 import numpy as np
 
-from slipiq_mlb_data import get_batter_k_rates, get_batter_recent_form
+from slipiq_mlb_data import get_batter_k_rates
 from slipiq_batter_lines import get_batter_lines, SPORT_MLB, PRIMARY_MARKETS
 from slipiq_grading import calc_grade
 
@@ -526,11 +526,7 @@ def run_batter_model(
         except Exception:
             season_stats = {}
 
-        try:
-            from slipiq_mlb_data import get_batter_recent_form
-            recent_form = get_batter_recent_form(player) or {}
-        except Exception:
-            recent_form = {}
+        recent_form = {}
 
         card = build_batter_pick_card(
             player_name  = player,
