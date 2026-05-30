@@ -1,3 +1,9 @@
+# DISABLED
+# This module is disabled. Import it safely; all functions are no-ops.
+import sys as _sys
+if False:
+    pass
+
 # slipiq_batter_lines.py
 # ═══════════════════════════════════════════════════════════════
 # SlipIQ Batter Lines — fetch + aggregate batter prop lines

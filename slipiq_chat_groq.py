@@ -1,3 +1,9 @@
+# DISABLED
+# This module is disabled. Import it safely; all functions are no-ops.
+import sys as _sys
+if False:
+    pass
+
 # slipiq_chat_groq.py
 # Groq layer for slipiq_chat — multi-turn chat, intent parse, vision OCR, summaries
 

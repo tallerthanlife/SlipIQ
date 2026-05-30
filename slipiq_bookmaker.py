@@ -1,3 +1,9 @@
+# DISABLED
+# This module is disabled. Import it safely; all functions are no-ops.
+import sys as _sys
+if False:
+    pass
+
 """
 Bookmaker.eu MLB main line scraper — direct JSON API (no browser needed).
 Used as the truest fair line source — line origin benchmark.

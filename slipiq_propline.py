@@ -368,26 +368,31 @@ def fetch_all_props(
         if cached is not None:
             return cached
 
-    MAX_EVENTS_PER_RUN = 15  # never fetch more than 15 events
-
     events = fetch_events(sport, force=force)
     if not events:
         print(f"  [propline] No events — cannot fetch props for {sport}")
         return []
 
-    all_events = events
-    if len(all_events) > MAX_EVENTS_PER_RUN:
-        print(f"  [propline] Capping at {MAX_EVENTS_PER_RUN} events "
-              f"(had {len(all_events)}) — saves credits")
-    events = events[:MAX_EVENTS_PER_RUN]
+    # Filter to only today's games — avoids burning credits on past/future events
+    todays_events = [
+        e for e in events
+        if (e.get("commence_time") or "")[:10] == today
+    ]
+
+    # Fallback: if date filter yields nothing, cap at 15
+    if not todays_events:
+        todays_events = events[:15]
+
+    print(f"  [propline] {len(todays_events)} today's events "
+          f"(filtered from {len(events)} total)")
 
     all_props: list[dict] = []
-    for event in events:
-        event_id     = event.get("id") or event.get("event_id") or ""
-        home_team    = event.get("home_team", "")
-        away_team    = event.get("away_team", "")
-        commence     = event.get("commence_time", "")
-        game_date    = commence[:10] if commence else today
+    for event in todays_events:
+        event_id  = event.get("id") or event.get("event_id") or ""
+        home_team = event.get("home_team", "")
+        away_team = event.get("away_team", "")
+        commence  = event.get("commence_time", "")
+        game_date = commence[:10] if commence else today
 
         if not event_id:
             continue
@@ -396,14 +401,22 @@ def fetch_all_props(
         if not odds:
             continue
 
+        # Skip immediately if no bookmakers — no credits wasted on processing
+        bookmakers = odds.get("bookmakers") or odds.get("_entries") or []
+        if not bookmakers:
+            continue
+
         props = _normalize_event_odds(
-            event_id     = event_id,
-            home_team    = home_team,
-            away_team    = away_team,
+            event_id      = event_id,
+            home_team     = home_team,
+            away_team     = away_team,
             commence_time = commence,
-            game_date    = game_date,
-            odds_raw     = odds,
+            game_date     = game_date,
+            odds_raw      = odds,
         )
+        # Store event_id on each prop for EV engine
+        for prop in props:
+            prop["_event_id"] = event_id
         all_props.extend(props)
 
     _cache_write(cache_key, all_props)

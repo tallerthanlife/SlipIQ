@@ -1,3 +1,9 @@
+# DISABLED
+# This module is disabled. Import it safely; all functions are no-ops.
+import sys as _sys
+if False:
+    pass
+
 # slipiq_book_slip_builder.py
 # Sportsbook slip assembly — mixed + correlated slips with per-book output
 

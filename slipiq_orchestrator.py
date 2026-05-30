@@ -56,16 +56,13 @@ STATE_PATH = CACHE_DIR / "orchestrator_state.json"
 
 # ─── Schedule (AZ time) ───────────────────────────────────────
 SCHEDULE = {
-    "early":        "06:30",
-    "main":         "08:30",
-    "confirm":      "09:15",
-    "pp_start":     "10:00",   # PrizePicks scanner start
-    "nba_main":     "11:00",
-    "nba_confirm":  "11:45",
-    "nba_breakout": "16:30",
-    "pp_stop":      "22:00",   # PrizePicks scanner stop
-    "nightly_scrape": "22:00", # BetOnline + Bookmaker nightly scrape
-    "review":       "23:00",
+    "early":          "06:30",
+    "main":           "08:30",
+    "confirm":        "09:15",
+    "pp_start":       "10:00",   # PrizePicks scanner start
+    "pp_stop":        "22:00",   # PrizePicks scanner stop
+    "nightly_scrape": "22:00",
+    "review":         "23:00",
 }
 
 LOOP_INTERVAL = 60   # scheduler tick (seconds)
@@ -97,14 +94,10 @@ def load_state() -> dict:
         "early_done":        False,
         "main_done":         False,
         "confirm_done":      False,
-        "pp_scanner_started":False,
-        "nba_main_done":     False,
-        "nba_confirm_done":  False,
-        "nba_breakout_done": False,
-        "review_done":       False,
+        "pp_scanner_started":  False,
+        "review_done":         False,
         "nightly_scrape_done": False,
-        "picks_posted":      0,
-        "nba_picks_posted":  0,
+        "picks_posted":        0,
         "last_run":          None,
         "morning_done":      False,
         "afternoon_done":    False,
@@ -160,21 +153,17 @@ def reset_state_for_new_day(state: dict) -> dict:
 
     print(f"  [cache] Cleared {deleted} stale files.")
 
-    state["last_reset_date"]    = today
-    state["early_done"]         = False
-    state["main_done"]          = False
-    state["confirm_done"]       = False
-    state["pp_scanner_started"] = False
-    state["nba_main_done"]      = False
-    state["nba_confirm_done"]   = False
-    state["nba_breakout_done"]  = False
-    state["review_done"]        = False
+    state["last_reset_date"]     = today
+    state["early_done"]          = False
+    state["main_done"]           = False
+    state["confirm_done"]        = False
+    state["pp_scanner_started"]  = False
+    state["review_done"]         = False
     state["nightly_scrape_done"] = False
-    state["picks_posted"]       = 0
-    state["nba_picks_posted"]   = 0
-    state["morning_done"]       = False
-    state["afternoon_done"]     = False
-    state["evening_done"]       = False
+    state["picks_posted"]        = 0
+    state["morning_done"]        = False
+    state["afternoon_done"]      = False
+    state["evening_done"]        = False
     return state
 
 
@@ -233,23 +222,7 @@ def run_early(state: dict) -> dict:
 def run_main(state: dict, force_discord: bool = True) -> dict:
     """
     8:30 AM — Full MLB pipeline.
-
-    PIPELINE:
-      [1] Props pull (3 cr) + F5/F3 ML lines (0 cr — cached)
-      [2] Individual pick curation → confidence agent → ev_engine gate
-          → SlipRouter → sgp_pool / indep_pool / ml_rl_pool / pp_queue / lotto_pool
-      [3] Correlated SGP parlays (ml_parlay) → post to #team-parlay
-      [4] Pitcher lotto slip ($0.25) → post to #team-parlay
-      [5] Independent ML/RL parlay → post to #team-parlay
-      [6] PrizePicks rolling scanner start (background thread)
-      [7] State update
-
-    FIXES APPLIED:
-      • fetch_odds_raw removed — not a real function
-      • run_curation called with correct param: post_discord=
-      • build_ml_parlay_embeds removed — not a real function
-      • run_all_models used instead of run_pitcher_model
-      • CHANNEL_TEAM_PARLAY imported from slipiq_env not slipiq_discord
+    PIPELINE: [1] Props pull → [2] Curation → Discord
     """
     print("\n" + "═" * 60)
     print("ORCHESTRATOR — MAIN RUN (8:30am AZ)")
@@ -257,184 +230,22 @@ def run_main(state: dict, force_discord: bool = True) -> dict:
     print("═" * 60)
 
     try:
-        # Pre-populate game schedule so SlateClock cache is not empty
-        try:
-            from slipiq_game_lines import get_probable_starters
-            games = get_probable_starters(force=True)
-            print(f"  [slate] Loaded {len(games)} games for today")
-        except Exception as e:
-            print(f"  [slate] Game fetch failed: {e} — using fallback")
-
-        # Load today's game schedule from PropLine (free endpoint)
-        all_games = []
-        try:
-            from slipiq_propline import fetch_events, fetch_scores
-            # Try scores first (includes in-progress and recent games)
-            todays_scores = fetch_scores(sport="baseball_mlb", days_from=1)
-            # Also get upcoming events
-            todays_events = fetch_events(sport="baseball_mlb")
-            # Merge both lists, deduplicate by id
-            all_games = {g["id"]: g for g in (todays_scores + todays_events)}.values()
-            all_games = list(all_games)
-            if all_games:
-                from slipiq_cache import cache_set
-                cache_set("mlb_todays_games", all_games)
-                print(f"  [slate] Loaded {len(all_games)} MLB games (scores+events)")
-            else:
-                print(f"  [slate] PropLine returned 0 games — fallback schedule active")
-        except Exception as e:
-            print(f"  [slate] PropLine games failed: {e} — fallback active")
-
-        # Alert Discord that a new slate window was detected
-        try:
-            from slipiq_discord import post_message
-            from slipiq_env import DISCORD_DAILY_PICKS_CHANNEL
-            from slipiq_slate_clock import build_schedule
-            clock   = build_schedule(games=all_games)
-            windows = clock.get_fire_windows()
-            total   = windows.get("total_games", 0)
-            summary = clock.slate_summary()
-            if total > 0 and DISCORD_DAILY_PICKS_CHANNEL:
-                post_message(
-                    DISCORD_DAILY_PICKS_CHANNEL,
-                    content=(
-                        f"⚾ **SlipIQ pipeline firing** — "
-                        f"{total} games detected today\n"
-                        f"{summary}\n"
-                        f"Picks incoming shortly..."
-                    )
-                )
-        except Exception:
-            pass
-
         # ── [1] Props pull ────────────────────────────────────
         from slipiq_parlayapi import fetch_props_raw, SPORT_MLB
-        print("\n  [1] Refreshing prop lines (3 credits)...")
+        print("\n  [1] Refreshing prop lines...")
         fetch_props_raw(SPORT_MLB, force=True)
 
-        # F5/F3 ML lines — zero credits (cached from game_lines module)
-        f5_lines = {}
-        try:
-            from slipiq_game_lines import fetch_f5_ml_lines
-            f5_lines = fetch_f5_ml_lines() or {}
-            print(f"      F5/F3 lines: {len(f5_lines)} games")
-        except Exception as e:
-            print(f"      F5/F3 lines unavailable: {e}")
-
-        # ── [2] Individual curation (EV-gated, SlipRouter wired) ─
+        # ── [2] Curation → Discord ────────────────────────────
         from slipiq_curate import run_curation
-        print("\n  [2] Running individual curation pipeline...")
-        # FIXED: post_discord= not post_to_discord=
+        print("\n  [2] Running curation pipeline...")
         curation_result = run_curation(post_discord=force_discord)
 
         picks_posted = curation_result.get("post_count", 0)
-        routing      = curation_result.get("routing", {})
+        print(f"\n  ✅ Main run complete — {picks_posted} picks posted")
 
-        print(f"      {picks_posted} picks posted")
-        if routing:
-            stats = routing.get("stats", {})
-            print(f"      Routing → SGP:{stats.get('sgp',0)} | "
-                  f"Indep:{stats.get('indep',0)} | "
-                  f"ML/RL:{stats.get('ml_rl',0)} | "
-                  f"PP:{stats.get('pp_queue',0)} | "
-                  f"Lotto:{stats.get('lotto',0)}")
-
-        # ── [3] Correlated SGP parlays ────────────────────────
-        print("\n  [3] Building correlated SGP parlays...")
-        try:
-            from slipiq_env import CHANNEL_TEAM_PARLAY
-            from slipiq_discord import post_message
-
-            # Use picks already produced by curation — no second model run
-            sgp_pool = routing.get("sgp_pool", []) if routing else []
-
-            if sgp_pool:
-                from slipiq_ml_parlay import build_ml_parlays
-                game_lines_list = list(f5_lines.values()) if f5_lines else []
-                ml_parlays = build_ml_parlays(sgp_pool, game_lines_list, [])
-
-                if ml_parlays and force_discord and CHANNEL_TEAM_PARLAY:
-                    _post_sgp_slips(ml_parlays, CHANNEL_TEAM_PARLAY, post_message)
-                else:
-                    print("      SGP parlays built — Discord skip (no_discord mode or no channel)")
-            else:
-                print("      SGP pool empty — no correlated slips built")
-
-        except Exception as e:
-            print(f"      SGP parlay build error: {e}")
-
-        # ── [4] Pitcher lotto slip ($0.25) ────────────────────
-        print("\n  [4] Building pitcher lotto slip...")
-        try:
-            lotto_pool = routing.get("lotto_pool", []) if routing else []
-            if lotto_pool:
-                from slipiq_independent_parlay import build_pitcher_lotto_slip
-                from slipiq_env import CHANNEL_TEAM_PARLAY
-                from slipiq_discord import post_message
-
-                lotto = build_pitcher_lotto_slip(lotto_pool, target_legs=10, min_legs=7)
-                if lotto and lotto.get("n_legs", 0) >= 7 and force_discord and CHANNEL_TEAM_PARLAY:
-                    from slipiq_independent_parlay import format_lotto_discord
-                    content = format_lotto_discord(lotto)
-                    post_message(CHANNEL_TEAM_PARLAY, content=content[:2000])
-                    print(f"      Lotto slip posted: {lotto['n_legs']} legs, "
-                          f"avg_prob={lotto.get('avg_true_prob', 0):.1%}")
-                elif lotto:
-                    print(f"      Lotto slip built ({lotto.get('n_legs',0)} legs) — Discord skip")
-                else:
-                    print("      Lotto: waiting for more legs (queue not full yet)")
-            else:
-                print("      Lotto pool empty — no high-prob pitchers cleared threshold")
-
-        except Exception as e:
-            print(f"      Lotto slip error: {e}")
-
-        # ── [5] Independent ML/RL parlay ──────────────────────
-        print("\n  [5] Building independent ML/RL parlay...")
-        try:
-            ml_rl_pool = routing.get("ml_rl_pool", []) if routing else []
-            if ml_rl_pool:
-                from slipiq_slip_router import filter_best_fn_per_game
-                from slipiq_independent_parlay import build_mlrl_parlay, format_mlrl_discord
-                from slipiq_env import CHANNEL_TEAM_PARLAY
-                from slipiq_discord import post_message
-                from slipiq_env import SLIPIQ_BANKROLL
-
-                best_fn_legs = filter_best_fn_per_game(ml_rl_pool)
-                mlrl = build_mlrl_parlay(
-                    best_fn_legs,
-                    target_legs = 5,
-                    min_legs    = 3,
-                    bankroll    = SLIPIQ_BANKROLL,
-                )
-                if mlrl and mlrl.get("passes_ev") and force_discord and CHANNEL_TEAM_PARLAY:
-                    content = format_mlrl_discord(mlrl)
-                    post_message(CHANNEL_TEAM_PARLAY, content=content[:2000])
-                    print(f"      ML/RL parlay posted: {mlrl['n_legs']} legs, "
-                          f"EV={mlrl.get('ev', 0)*100:+.1f}%")
-                elif mlrl:
-                    print(f"      ML/RL parlay built ({mlrl['n_legs']} legs) — "
-                          f"{'EV not confirmed' if not mlrl.get('passes_ev') else 'Discord skip'}")
-                else:
-                    print("      ML/RL parlay: insufficient +EV legs")
-            else:
-                print("      ML/RL pool empty — no F3/F5 lines cleared EV threshold")
-
-        except Exception as e:
-            print(f"      ML/RL parlay error: {e}")
-
-        # ── [6] PrizePicks scanner (background) ───────────────
-        # Note: scheduler also fires pp_start at 10:00 AM.
-        # This starts it early if main run happens to fire after 10 AM.
-        now_hour = datetime.now().hour
-        if now_hour >= 10:
-            _start_pp_scanner()
-
-        # ── [7] State update ──────────────────────────────────
         state["main_done"]      = True
         state["main_done_date"] = datetime.now().strftime("%Y-%m-%d")
         state["picks_posted"]   = picks_posted
-        print(f"\n  ✅ Main run complete — {picks_posted} picks + slips posted")
 
     except Exception as e:
         import traceback
@@ -442,70 +253,6 @@ def run_main(state: dict, force_discord: bool = True) -> dict:
         print(traceback.format_exc())
 
     return state
-
-
-def _post_sgp_slips(ml_parlays: dict, channel: str, post_fn) -> None:
-    """
-    Format and post SGP slip_1 and slip_2 to Discord.
-    FIXED: no longer calls build_ml_parlay_embeds (does not exist).
-    Uses plain text formatting instead.
-    """
-    for key, label in [("slip_1", "SGP Combo"), ("slip_2", "Best Legs")]:
-        slip = ml_parlays.get(key)
-        if not slip or not slip.get("legs"):
-            continue
-
-        total_legs = slip.get("total_legs", len(slip.get("legs", [])))
-        avg_conf   = slip.get("avg_conf", 0)
-        games      = slip.get("games_covered", slip.get("games", "?"))
-
-        lines = [
-            f"🎯 **SlipIQ SGP — {label} | {total_legs} Legs | {avg_conf}% avg confidence**",
-            f"Games: {games}",
-            "",
-        ]
-
-        leg_emoji = {
-            "pitcher_k":      "⚾",
-            "f5_ml":          "🏟️",
-            "f3_ml":          "🏟️",
-            "f5_rl":          "📊",
-            "f3_rl":          "📊",
-            "batter_hits":    "🏏",
-            "batter":         "🏏",
-            "opp_total_under": "⬇️",
-        }
-
-        for leg in slip.get("legs", [])[:10]:
-            emoji   = leg_emoji.get(leg.get("leg_type", ""), "📊")
-            label_  = leg.get("label", leg.get("prop", ""))
-            odds_v  = leg.get("odds")
-            note    = leg.get("note", "")
-            conf    = leg.get("confidence", 0)
-            odds_s  = f" | {'+' if odds_v and odds_v > 0 else ''}{int(odds_v)}" if odds_v else ""
-            ev_tag  = ""
-            if leg.get("ev") is not None:
-                ev_tag = f" | EV {leg['ev']*100:+.1f}%"
-            lines.append(f"  {emoji} {label_}{odds_s} | {conf}%{ev_tag}")
-            if note:
-                lines.append(f"       ↳ {note}")
-
-        lines.append("")
-        lines.append("📚 DraftKings · Fanatics — verify lines before submitting")
-
-        try:
-            from slipiq_writer import write_sgp_narrative
-            mock_slip = {"legs": slip.get("legs", [])}
-            sgp_note = write_sgp_narrative(mock_slip)
-            if sgp_note:
-                lines.append("")
-                lines.append(f"💡 {sgp_note}")
-        except Exception:
-            pass
-
-        content = "\n".join(lines)
-        post_fn(channel, content=content[:2000])
-        print(f"      Posted SGP {label} ({total_legs} legs) to Discord")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -630,64 +377,7 @@ def stop_pp_scanner_run(state: dict) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════
-# SECTION 6 — NBA RUNNERS (gated by NBA_SEASON_ACTIVE)
-# ═══════════════════════════════════════════════════════════════
-
-def run_nba_main(state: dict, force_discord: bool = True) -> dict:
-    """11:00 AM — NBA pipeline. Only runs if NBA_SEASON_ACTIVE=true."""
-    print("\n" + "═" * 60)
-    print("ORCHESTRATOR — NBA MAIN (11:00am AZ)")
-    print("═" * 60)
-
-    try:
-        from slipiq_nba_orchestrator import run_nba_pipeline
-        result = run_nba_pipeline(post_to_discord=force_discord, include_breakout=True)
-        state["nba_main_done"]    = True
-        state["nba_picks_posted"] = result.get("post_count", 0)
-        print(f"\n  ✅ NBA main complete — {state['nba_picks_posted']} picks")
-    except Exception as e:
-        print(f"\n  ❌ NBA main error: {e}")
-
-    return state
-
-
-def run_nba_confirm_run(state: dict) -> dict:
-    """11:45 AM — NBA confirm / line refresh."""
-    print("\n" + "═" * 60)
-    print("ORCHESTRATOR — NBA CONFIRM (11:45am AZ)")
-    print("═" * 60)
-
-    try:
-        from slipiq_nba_orchestrator import run_nba_confirm
-        result = run_nba_confirm(post_to_discord=True)
-        state["nba_confirm_done"]  = True
-        state["nba_picks_posted"] += result.get("post_count", 0)
-        print(f"\n  ✅ NBA confirm complete")
-    except Exception as e:
-        print(f"\n  ❌ NBA confirm error: {e}")
-
-    return state
-
-
-def run_nba_breakout(state: dict) -> dict:
-    """4:30 PM — Injury-window breakout scan."""
-    print("\n" + "═" * 60)
-    print("ORCHESTRATOR — NBA BREAKOUT (4:30pm AZ)")
-    print("═" * 60)
-
-    try:
-        from slipiq_nba_orchestrator import run_breakout_check
-        n = len(run_breakout_check(post_alerts=True))
-        state["nba_breakout_done"] = True
-        print(f"\n  ✅ Breakout scan — {n} alert(s)")
-    except Exception as e:
-        print(f"\n  ❌ Breakout scan error: {e}")
-
-    return state
-
-
-# ═══════════════════════════════════════════════════════════════
-# SECTION 7 — SHARP REVIEW (11:00 PM)
+# SECTION 6 — SHARP REVIEW (11:00 PM)
 # ═══════════════════════════════════════════════════════════════
 
 def run_review(state: dict) -> dict:
@@ -805,15 +495,6 @@ def run_scheduler() -> None:
     clock.get_fire_windows()  # pre-load on startup
     print(f"\n  {clock.slate_summary()}\n")
 
-    # Import NBA flag once
-    try:
-        from slipiq_env import NBA_SEASON_ACTIVE
-    except Exception:
-        NBA_SEASON_ACTIVE = False
-
-    if not NBA_SEASON_ACTIVE:
-        print("  ⚠️  NBA jobs disabled — NBA_SEASON_ACTIVE=false in .env\n")
-
     # ── Startup catch-up: fire missed runs on container restart ─────────────
     AZ    = pytz.timezone("US/Arizona")
     now   = datetime.now(AZ)
@@ -928,36 +609,6 @@ def run_scheduler() -> None:
                     save_state(state)
                     _pipeline_fired = True
 
-                elif should_run(SCHEDULE["nba_main"], state.get("nba_main_done", False)):
-                    if NBA_SEASON_ACTIVE:
-                        print(f"\n[{now_str}] → NBA main run")
-                        state = run_nba_main(state)
-                        save_state(state)
-                    else:
-                        state["nba_main_done"] = True  # skip silently
-                        save_state(state)
-                    _pipeline_fired = True
-
-                elif should_run(SCHEDULE["nba_confirm"], state.get("nba_confirm_done", False)):
-                    if NBA_SEASON_ACTIVE:
-                        print(f"\n[{now_str}] → NBA confirm")
-                        state = run_nba_confirm_run(state)
-                        save_state(state)
-                    else:
-                        state["nba_confirm_done"] = True
-                        save_state(state)
-                    _pipeline_fired = True
-
-                elif should_run(SCHEDULE["nba_breakout"], state.get("nba_breakout_done", False)):
-                    if NBA_SEASON_ACTIVE:
-                        print(f"\n[{now_str}] → NBA breakout scan")
-                        state = run_nba_breakout(state)
-                        save_state(state)
-                    else:
-                        state["nba_breakout_done"] = True
-                        save_state(state)
-                    _pipeline_fired = True
-
                 elif should_run(SCHEDULE["pp_stop"], False, window=5):
                     print(f"\n[{now_str}] → PrizePicks scanner stop")
                     _stop_pp_scanner()
@@ -1015,18 +666,14 @@ def show_status() -> None:
         ("Main (8:30am)",     state.get("main_done")),
         ("Confirm (9:15am)",  state.get("confirm_done")),
         ("PP Scanner",        state.get("pp_scanner_started")),
-        ("NBA Main (11:00am)",state.get("nba_main_done")),
-        ("NBA Confirm",       state.get("nba_confirm_done")),
-        ("NBA Breakout",      state.get("nba_breakout_done")),
         ("Review (11:00pm)",  state.get("review_done")),
     ]
     print("\n  Today's runs:")
     for name, done in checks:
         print(f"    {'✅' if done else '⏳'} {name}")
 
-    print(f"\n  MLB picks posted : {state.get('picks_posted', 0)}")
-    print(f"  NBA picks posted : {state.get('nba_picks_posted', 0)}")
-    print(f"  Last run         : {state.get('last_run', 'Never')}")
+    print(f"\n  Picks posted : {state.get('picks_posted', 0)}")
+    print(f"  Last run     : {state.get('last_run', 'Never')}")
 
     # API key status
     try:
@@ -1109,12 +756,6 @@ if __name__ == "__main__":
     elif "--review" in args:
         state = load_state()
         state = run_review(state)
-        save_state(state)
-
-    elif "--nba" in args:
-        state = load_state()
-        state = reset_state_for_new_day(state)
-        state = run_nba_main(state, force_discord="--no-discord" not in args)
         save_state(state)
 
     elif "--morning" in args or "--force" in args:

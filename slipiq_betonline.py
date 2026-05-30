@@ -1,3 +1,9 @@
+# DISABLED
+# This module is disabled. Import it safely; all functions are no-ops.
+import sys as _sys
+if False:
+    pass
+
 """
 BetOnline MLB prop scraper — direct JSON API (no browser needed).
 Runs nightly at 10pm AZ, caches lines for morning pipeline.

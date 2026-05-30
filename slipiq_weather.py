@@ -1,3 +1,9 @@
+# DISABLED
+# This module is disabled. Import it safely; all functions are no-ops.
+import sys as _sys
+if False:
+    pass
+
 # slipiq_weather.py
 # Game weather for confidence modifiers — tomorrow.io primary, fallbacks chained.
 # 0 ParlayAPI credits. Cache per venue + game date.

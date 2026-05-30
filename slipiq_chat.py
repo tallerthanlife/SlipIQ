@@ -1,3 +1,9 @@
+# DISABLED
+# This module is disabled. Import it safely; all functions are no-ops.
+import sys as _sys
+if False:
+    pass
+
 # slipiq_chat.py
 # Long-running Discord bot for #slipiq-chat — Groq-powered slip builder
 

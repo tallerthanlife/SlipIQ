@@ -1,3 +1,9 @@
+# DISABLED
+# This module is disabled. Import it safely; all functions are no-ops.
+import sys as _sys
+if False:
+    pass
+
 # slipiq_batter_model.py
 # run_batter_model(sport_key=SPORT_MLB, min_confidence=55, markets=None) -> list[dict]
 # ═══════════════════════════════════════════════════════════════

@@ -1,3 +1,9 @@
+# DISABLED
+# This module is disabled. Import it safely; all functions are no-ops.
+import sys as _sys
+if False:
+    pass
+
 """
 SlipIQ ML Parlay Builder — SGP Correlation Engine
 Builds two slips per day:

@@ -1,3 +1,9 @@
+# DISABLED
+# This module is disabled. Import it safely; all functions are no-ops.
+import sys as _sys
+if False:
+    pass
+
 """
 SlipIQ Slip Review — 6-step pre-bet checklist
 Validates each pick before it ships to Discord / results.

@@ -1,3 +1,9 @@
+# DISABLED
+# This module is disabled. Import it safely; all functions are no-ops.
+import sys as _sys
+if False:
+    pass
+
 # slipiq_game_lines.py
 # F5 ML lines — DraftKings / Fanatics / PrizePicks only (Pinnacle = internal ref later)
 # Source: The Odds API h2h_1st_5_innings (cached per event/day, key rotation)
