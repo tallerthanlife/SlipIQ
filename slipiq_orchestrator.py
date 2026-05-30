@@ -214,7 +214,9 @@ def run_early(state: dict) -> dict:
         print("\n  ✅ Early run complete")
 
     except Exception as e:
+        import traceback
         print(f"\n  ❌ Early run error: {e}")
+        print(traceback.format_exc())
 
     return state
 
@@ -439,9 +441,9 @@ def run_main(state: dict, force_discord: bool = True) -> dict:
         print(f"\n  ✅ Main run complete — {picks_posted} picks + slips posted")
 
     except Exception as e:
-        print(f"\n  ❌ Main run error: {e}")
         import traceback
-        traceback.print_exc()
+        print(f"\n  ❌ Main run error: {e}")
+        print(traceback.format_exc())
 
     return state
 
@@ -545,7 +547,9 @@ def run_confirm(state: dict) -> dict:
         print(f"\n  ✅ Confirm run complete — {new_picks} additional picks posted")
 
     except Exception as e:
+        import traceback
         print(f"\n  ❌ Confirm run error: {e}")
+        print(traceback.format_exc())
 
     return state
 
