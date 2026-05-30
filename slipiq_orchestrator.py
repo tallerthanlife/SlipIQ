@@ -238,7 +238,7 @@ def run_main(state: dict, force_discord: bool = True) -> dict:
         # ── [2] Curation → Discord ────────────────────────────
         from slipiq_curate import run_curation
         print("\n  [2] Running curation pipeline...")
-        curation_result = run_curation(post_to_discord=force_discord)
+        curation_result = run_curation(post_discord=force_discord)
 
         picks_posted = curation_result.get("post_count", 0)
         print(f"\n  ✅ Main run complete — {picks_posted} picks posted")
