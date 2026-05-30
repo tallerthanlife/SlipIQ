@@ -62,6 +62,7 @@ SCHEDULE = {
     "nba_confirm":  "11:45",
     "nba_breakout": "16:30",
     "pp_stop":      "22:00",   # PrizePicks scanner stop
+    "nightly_scrape": "22:00", # BetOnline + Bookmaker nightly scrape
     "review":       "23:00",
 }
 
@@ -99,6 +100,7 @@ def load_state() -> dict:
         "nba_confirm_done":  False,
         "nba_breakout_done": False,
         "review_done":       False,
+        "nightly_scrape_done": False,
         "picks_posted":      0,
         "nba_picks_posted":  0,
         "last_run":          None,
@@ -165,6 +167,7 @@ def reset_state_for_new_day(state: dict) -> dict:
     state["nba_confirm_done"]   = False
     state["nba_breakout_done"]  = False
     state["review_done"]        = False
+    state["nightly_scrape_done"] = False
     state["picks_posted"]       = 0
     state["nba_picks_posted"]   = 0
     state["morning_done"]       = False
@@ -774,6 +777,30 @@ def _start_health_server(port: int = 8080) -> None:
         print(f"  [health] Health server failed to start: {e}")
 
 
+def run_nightly_scrape(state: dict) -> dict:
+    """Called by scheduler at 22:00 AZ — pre-caches sharp book lines for morning pipeline."""
+    print("\n" + "═" * 60)
+    print("ORCHESTRATOR — NIGHTLY SCRAPE (10:00pm AZ)")
+    print("═" * 60)
+
+    try:
+        from slipiq_betonline import scrape_betonline_mlb_props
+        bo_lines = scrape_betonline_mlb_props()
+        print(f"  [nightly] BetOnline: {len(bo_lines)} lines")
+    except Exception as e:
+        print(f"  [nightly] BetOnline error: {e}")
+
+    try:
+        from slipiq_bookmaker import scrape_bookmaker_mlb
+        bm_lines = scrape_bookmaker_mlb()
+        print(f"  [nightly] Bookmaker: {len(bm_lines)} lines")
+    except Exception as e:
+        print(f"  [nightly] Bookmaker error: {e}")
+
+    state["nightly_scrape_done"] = True
+    return state
+
+
 def run_scheduler() -> None:
     """
     Continuous loop — checks every 60 seconds if a task should fire.
@@ -921,6 +948,12 @@ def run_scheduler() -> None:
                 elif should_run(SCHEDULE["pp_stop"], False, window=5):
                     print(f"\n[{now_str}] → PrizePicks scanner stop")
                     _stop_pp_scanner()
+
+                elif should_run(SCHEDULE["nightly_scrape"], state.get("nightly_scrape_done", False)):
+                    print(f"\n[{now_str}] → Nightly sharp book scrape")
+                    state = run_nightly_scrape(state)
+                    save_state(state)
+                    _pipeline_fired = True
 
                 elif should_run(SCHEDULE["review"], state["review_done"]):
                     print(f"\n[{now_str}] → Sharp Review")

@@ -68,19 +68,21 @@ def compute_edge(pick_side_prob: float, book_odds: int) -> float:
 def get_sharpest_line(bookmakers: list, market: str) -> dict | None:
     """
     From a PropLine bookmakers list, find the sharpest available line.
-    Priority: pinnacle > novig > circa > bookmaker > draftkings > fanduel.
+    Priority: bookmaker > pinnacle > betonline > novig > circa > draftkings > fanduel > prizepicks.
     Returns over/under odds and point from the highest-priority book found.
     """
     SHARP_PRIORITY = [
+        "bookmaker",        # line origin — sharpest in market
         "pinnacle",
         "pinnacle_us",
+        "betonline",        # posts early, sharp tolerant
         "novig",
         "circa",
-        "bookmaker",
         "draftkings",
         "betrivers",
         "fanduel",
         "bovada",
+        "prizepicks",       # last — softest line, most exploitable
     ]
 
     best          = None

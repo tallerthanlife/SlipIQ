@@ -239,8 +239,46 @@ def gate_pick(card: dict) -> dict:
     Final gate: POST / HOLD / SKIP with reason.
     Calls confirm_ev() to ensure EV is real before any EV-based upgrade.
     """
-    # Ensure EV is real before gating
-    card = confirm_ev(card)
+    from slipiq_novig import get_sharpest_line, remove_vig, compute_edge
+
+    BREAK_EVEN_PROB = 0.542  # PrizePicks 2-leg break-even
+
+    bookmakers = card.get("bookmakers", []) or card.get("_entries", [])
+    sharp_line = get_sharpest_line(bookmakers, card.get("market", "pitcher_strikeouts"))
+
+    if sharp_line and sharp_line.get("over_odds") and sharp_line.get("under_odds"):
+        novig = remove_vig(sharp_line["over_odds"], sharp_line["under_odds"])
+
+        direction = card.get("direction", "over")
+        fair_prob = novig[f"fair_{direction}_prob"]
+        model_prob = card.get("model_prob", fair_prob)
+
+        card["fair_prob"] = fair_prob
+        card["sharp_book"] = sharp_line["book"]
+        card["novig_line"] = novig
+
+        # Edge vs book
+        book_odds = sharp_line.get(f"{direction}_odds")
+        card["ev_pct"] = compute_edge(model_prob, book_odds)
+
+        # PrizePicks threshold gate
+        card["pp_threshold_met"] = model_prob >= BREAK_EVEN_PROB
+        card["ev_confirmed"] = card["ev_pct"] > 0 or card["pp_threshold_met"]
+
+        print(f"  [ev] {card.get('player')}: "
+              f"book={sharp_line['book']} "
+              f"fair={fair_prob:.3f} "
+              f"model={model_prob:.3f} "
+              f"ev={card['ev_pct']:+.1f}% "
+              f"pp_threshold={'✅' if card['pp_threshold_met'] else '❌'}")
+    else:
+        # No sharp line available — use model confidence only
+        model_prob = card.get("model_prob", 0)
+        card["pp_threshold_met"] = model_prob >= BREAK_EVEN_PROB
+        card["ev_confirmed"] = model_prob >= 0.60
+        print(f"  [ev] {card.get('player')}: no sharp line — "
+              f"model={model_prob:.3f} "
+              f"pp_threshold={'✅' if card['pp_threshold_met'] else '❌'}")
 
     confidence       = card.get("confidence", 0)
     grade            = card.get("grade", "D")
