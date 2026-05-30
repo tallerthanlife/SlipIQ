@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -76,6 +77,10 @@ STATS_CACHE_TTL_MINUTES  = 365 * 24 * 60  # box scores: permanent once final
 # Daily credit tracker
 CREDIT_LOG         = CACHE_DIR / "propline_credits.json"
 DAILY_CREDIT_LIMIT = 800
+
+# Rate limiter
+_last_request_time   = 0.0
+MIN_REQUEST_INTERVAL = 2.0  # seconds between requests
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -180,12 +185,21 @@ def _get(endpoint: str, params: dict = None, credits: int = 1) -> dict | list | 
     apiKey is always injected into query params per Prop-Line auth spec.
     Returns None on any failure — callers must handle gracefully.
     """
+    global _last_request_time
+
     if not PROPLINE_API_KEY:
         print("  [propline] ⚠️  PROPLINE_API_KEY not set in .env")
         return None
 
     if not _spend_credits(credits, endpoint):
         return None
+
+    # Rate limit — wait minimum interval between requests
+    elapsed = time.time() - _last_request_time
+    if elapsed < MIN_REQUEST_INTERVAL:
+        time.sleep(MIN_REQUEST_INTERVAL - elapsed)
+
+    _last_request_time = time.time()
 
     url = f"{BASE_URL}/{endpoint.lstrip('/')}"
     merged_params = {"apiKey": PROPLINE_API_KEY}
@@ -199,6 +213,10 @@ def _get(endpoint: str, params: dict = None, credits: int = 1) -> dict | list | 
             headers = {"Accept": "application/json"},
             timeout = 15,
         )
+        if resp.status_code == 429:
+            print(f"  [propline] Rate limited — waiting 60s...")
+            time.sleep(60)
+            resp = requests.get(url, params=merged_params, headers={"Accept": "application/json"}, timeout=15)
         resp.raise_for_status()
         return resp.json()
     except requests.exceptions.HTTPError as e:

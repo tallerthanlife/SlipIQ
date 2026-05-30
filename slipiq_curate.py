@@ -303,7 +303,9 @@ def run_curation(
         try:
             run_discord_post(curation_result)
         except Exception as e:
-            print(f"  [curate] Discord post error: {e}")
+            import traceback
+            print(f"\n  [discord] Error: {e}")
+            print(traceback.format_exc())
 
     return curation_result
 

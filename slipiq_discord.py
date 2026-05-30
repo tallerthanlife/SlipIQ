@@ -726,6 +726,10 @@ def run_discord_post(slate: dict = None) -> bool:
     post_count = len(post_list)
     print(f"\n  [discord] Posting slate: {post_count} picks to #daily-picks")
 
+    if post_count == 0:
+        print("  [discord] No picks in post_list — posting brief only")
+        return post_morning_brief(slate)
+
     # 1. Morning brief summary card
     post_morning_brief(slate)
 
