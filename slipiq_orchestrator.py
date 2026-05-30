@@ -38,6 +38,8 @@ from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
+import pytz
+
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -813,7 +815,6 @@ def run_scheduler() -> None:
         print("  ⚠️  NBA jobs disabled — NBA_SEASON_ACTIVE=false in .env\n")
 
     # ── Startup catch-up: fire missed runs on container restart ─────────────
-    import pytz
     AZ    = pytz.timezone("US/Arizona")
     now   = datetime.now(AZ)
     today = str(now.date())
