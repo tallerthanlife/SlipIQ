@@ -511,13 +511,6 @@ def post_morning_brief(slate: dict) -> bool:
     # Brief summary first
     brief_embed = build_morning_brief_embed(slate)
     post_message(DISCORD_DAILY_PICKS_CHANNEL, embed=brief_embed)
-
-    # Post each pick individually
-    picks = slate.get("post_list") or []
-    if not picks and slate.get("best_pick"):
-        picks = [slate["best_pick"]]
-
-    post_picks_to_discord(picks, DISCORD_DAILY_PICKS_CHANNEL)
     return True
 
 

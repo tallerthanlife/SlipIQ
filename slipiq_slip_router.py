@@ -42,16 +42,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from slipiq_ev_engine import (
-    assess_leg,
-    sportsbook_edge,
-    no_vig_prob,
-    american_to_decimal,
-    american_to_implied_prob,
-    MIN_EDGE_SPORTSBOOK,
-    MIN_EDGE_PRIZEPICKS,
-    prizepicks_leg_threshold,
-)
 
 CACHE_DIR  = Path("cache")
 CACHE_DIR.mkdir(exist_ok=True)
