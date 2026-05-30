@@ -333,6 +333,24 @@ def run_main(state: dict, force_discord: bool = True) -> dict:
                   f"PP:{stats.get('pp_queue',0)} | "
                   f"Lotto:{stats.get('lotto',0)}")
 
+        # Run batter model and post batter picks
+        try:
+            from slipiq_batter_model import run_batter_model
+            from slipiq_batter_lines import get_batter_lines
+            print("  [2b] Running batter model...")
+            batter_lines = get_batter_lines()
+            batter_picks = run_batter_model(
+                batter_lines=batter_lines,
+                min_confidence=60,
+                post_to_discord=force_discord
+            )
+            print(f"  [2b] Batter model: {len(batter_picks)} picks")
+        except Exception as e:
+            import traceback
+            print(f"  [2b] Batter model error: {e}")
+            print(traceback.format_exc())
+            batter_picks = []
+
         # ── [3] Correlated SGP parlays ────────────────────────
         print("\n  [3] Building correlated SGP parlays...")
         try:

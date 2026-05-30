@@ -231,7 +231,14 @@ class SlipRouter:
                     ml_rl_pool.append(leg)
                     routed = True
                 else:
-                    rejected.append({**leg, "_rejected_reason": f"ML/RL EV {ev:.3f} < {self.ml_rl_min_ev}"})
+                    rejection_reason = f"ML/RL EV {ev:.3f} < {self.ml_rl_min_ev}"
+                    # POST picks always get at least independent channel
+                    if leg.get("gate") == "POST":
+                        indep_pool.append(leg)
+                        print(f"  [router] {leg.get('player')} → Indep (fallback from rejection)")
+                    else:
+                        print(f"  [router] Rejected {leg.get('player')}: {rejection_reason}")
+                        rejected.append({**leg, "_rejected_reason": rejection_reason})
                 continue
 
             # ── Route 2: SGP eligible pitcher props ─────────────
@@ -268,7 +275,14 @@ class SlipRouter:
                 routed = True
 
             if not routed:
-                rejected.append({**leg, "_rejected_reason": f"ev={ev:.3f} tp={tp:.3f} no route"})
+                rejection_reason = f"ev={ev:.3f} tp={tp:.3f} no route"
+                # POST picks always get at least independent channel
+                if leg.get("gate") == "POST":
+                    indep_pool.append(leg)
+                    print(f"  [router] {leg.get('player')} → Indep (fallback from rejection)")
+                else:
+                    print(f"  [router] Rejected {leg.get('player')}: {rejection_reason}")
+                    rejected.append({**leg, "_rejected_reason": rejection_reason})
 
         # Deduplicate lotto pool — remove duplicates by (player, market, direction)
         lotto_pool = _dedup_legs(lotto_pool)
