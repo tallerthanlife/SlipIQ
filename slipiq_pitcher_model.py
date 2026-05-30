@@ -541,7 +541,8 @@ def build_pick_card(
     if not pinnacle:
         flags.append("⚠️  sharp anchor missing — EV unconfirmed")
 
-    return {
+    prop = entries[0] if entries else {}
+    pick = {
         # Identity
         "player":        player_name,
         "game_date":     prop_data.get("game_date"),
@@ -609,8 +610,13 @@ def build_pick_card(
             "park_factor":        park_factor,
             "season_pitches":     proj.get("season_pitches"),
             "recent_starts":      proj.get("recent_starts"),
-        }
+        },
     }
+    pick["bookmakers"] = prop.get("bookmakers", [])
+    pick["_event_id"] = prop.get("_event_id", "")
+    books = [b.get("key", "?") for b in pick.get("bookmakers", [])]
+    print(f"  [books] {pick.get('player')}: {books}")
+    return pick
 
 
 # ═════════════════════════════════════════
@@ -762,7 +768,8 @@ def build_extra_market_card(
     if not pinnacle:
         flags.append("⚠️  sharp anchor missing — EV unconfirmed")
 
-    return {
+    prop = entries[0] if entries else {}
+    pick = {
         "player":           player_name,
         "game_date":        prop_data.get("game_date"),
         "home_team":        prop_data.get("home_team"),
@@ -791,6 +798,11 @@ def build_extra_market_card(
         "no_pinnacle":      pinnacle is None or not pinnacle.get("over_price"),
         "_internal": {"market_projection": market_key},
     }
+    pick["bookmakers"] = prop.get("bookmakers", [])
+    pick["_event_id"] = prop.get("_event_id", "")
+    books = [b.get("key", "?") for b in pick.get("bookmakers", [])]
+    print(f"  [books] {pick.get('player')}: {books}")
+    return pick
 
 
 # ═════════════════════════════════════════
@@ -814,8 +826,17 @@ def run_pitcher_model(sport_key: str = SPORT_MLB) -> list[dict]:
 
     # Step 1: Props
     print("\n[1] Loading prop lines...")
-    all_props = get_all_props(sport_key)
-    k_props   = all_props["pitcher_strikeouts"]
+    try:
+        from slipiq_propline import fetch_all_props
+        props = fetch_all_props(sport="baseball_mlb")
+        print(f"  [props] PropLine primary: {len(props)} props")
+        if not props:
+            raise ValueError("PropLine returned empty")
+    except Exception as e:
+        print(f"  [props] PropLine failed ({e}) — falling back to ParlayAPI")
+        from slipiq_parlayapi import get_all_props
+        props = get_all_props(sport_key)
+    k_props = props["pitcher_strikeouts"] if isinstance(props, dict) else props
     agg       = aggregate_by_player(k_props)
 
     # Pinnacle supplement — Prop-Line first, Odds API second (0 extra credits on cache hit)
