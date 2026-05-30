@@ -319,6 +319,28 @@ def build_pick_card(
     except Exception:
         pass
 
+    # Matchup engine adjustment (replaces/refines the mlb_data K-rate above)
+    matchup_grade   = None
+    matchup_opp_k   = None
+    matchup_boost   = proj.get("matchup_boost")
+    matchup_opp_avg = None
+    try:
+        from slipiq_matchup import adjust_pitcher_projection
+        opponent = prop_data.get("away_team") or prop_data.get("home_team") or ""
+        if opponent:
+            matchup = adjust_pitcher_projection(
+                base_projection = proj["projection"],
+                pitcher_name    = player_name,
+                opponent_team   = opponent,
+            )
+            proj["projection"] = matchup["adjusted_projection"]
+            matchup_grade      = matchup["matchup_grade"]
+            matchup_opp_k      = matchup["opp_k_rate"]
+            matchup_boost      = matchup["adjustment_pct"]
+            matchup_opp_avg    = matchup["opp_k_vs_avg"]
+    except Exception as e:
+        print(f"  [matchup] {player_name} adjustment failed: {e}")
+
     # Get PrizePicks line for this pitcher
     pp_line_val    = None
     pp_edge_val    = None
@@ -418,6 +440,12 @@ def build_pick_card(
         "trend":         trend,
         "recent_k_list": proj.get("recent_k_list"),
         "flags":         flags,
+
+        # Matchup engine
+        "matchup_grade":  matchup_grade,
+        "opp_k_rate":     matchup_opp_k,
+        "matchup_boost":  matchup_boost,
+        "opp_k_vs_avg":   matchup_opp_avg,
 
         # PrizePicks cross-reference
         "pp_line":        pp_line_val,

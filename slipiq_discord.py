@@ -188,12 +188,28 @@ def build_best_pick_embed(card: dict) -> dict:
             "value":  _build_ev_field(card),
             "inline": False,
         },
-        {
+    ]
+
+    if card.get("matchup_grade"):
+        boost     = card.get("matchup_boost", 0) or 0
+        opp_vs_avg = card.get("opp_k_vs_avg", 0) or 0
+        boost_str   = f"+{boost}%" if boost >= 0 else f"{boost}%"
+        vs_avg_str  = f"+{opp_vs_avg}%" if opp_vs_avg >= 0 else f"{opp_vs_avg}%"
+        fields.append({
+            "name": "🎯 Matchup",
+            "value": (
+                f"Grade: **{card['matchup_grade']}** | "
+                f"Proj adjustment: {boost_str} | "
+                f"Opp K-rate vs avg: {vs_avg_str}"
+            ),
+            "inline": False,
+        })
+
+    fields.append({
             "name": "💰 DK · Fanatics · PrizePicks",
             "value": book_line,
             "inline": False,
-        },
-    ]
+    })
 
     return {
         "title":       f"⚾ SlipIQ Pick — {player} Strikeouts",

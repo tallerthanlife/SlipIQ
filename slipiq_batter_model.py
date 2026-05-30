@@ -359,6 +359,26 @@ def build_batter_pick_card(
     # Project
     proj = project_batter_stat(player_name, market_key, season_stats, recent_form, park_factor)
 
+    # Matchup engine adjustment
+    matchup_grade = None
+    matchup_boost = None
+    try:
+        from slipiq_matchup import adjust_batter_projection
+        opposing_pitcher = prop_data.get("opposing_pitcher", "")
+        stat = market_key.replace("batter_", "")
+        if opposing_pitcher:
+            matchup = adjust_batter_projection(
+                base_projection  = proj["projection"],
+                batter_name      = player_name,
+                opposing_pitcher = opposing_pitcher,
+                stat_type        = stat,
+            )
+            proj["projection"] = matchup["adjusted_projection"]
+            matchup_grade      = matchup["matchup_grade"]
+            matchup_boost      = matchup["adjustment_pct"]
+    except Exception as e:
+        print(f"  [matchup] Batter {player_name} failed: {e}")
+
     # Compute Poisson true_prob with actual line
     tp_over, tp_under = _compute_poisson_true_prob(proj["projection"], line)
     proj["true_prob_over"]  = tp_over
@@ -459,6 +479,10 @@ def build_batter_pick_card(
         # Context
         "trend":          trend,
         "flags":          flags,
+
+        # Matchup engine
+        "matchup_grade":  matchup_grade,
+        "matchup_boost":  matchup_boost,
 
         # Internal (operator only — never post to Discord)
         "_internal": {
