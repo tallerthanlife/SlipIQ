@@ -42,6 +42,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+PRIZEPICKS_LEG_THRESHOLD = 0.542
+prizepicks_leg_threshold = 0.542
 
 CACHE_DIR  = Path("cache")
 CACHE_DIR.mkdir(exist_ok=True)

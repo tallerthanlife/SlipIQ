@@ -232,8 +232,14 @@ def run_main(state: dict, force_discord: bool = True) -> dict:
     try:
         # ── [1] Props pull ────────────────────────────────────
         from slipiq_parlayapi import fetch_props_raw, SPORT_MLB
+        from slipiq_propline import fetch_all_props
         print("\n  [1] Refreshing prop lines...")
         fetch_props_raw(SPORT_MLB, force=True)
+        try:
+            pl_props = fetch_all_props(sport="baseball_mlb")
+            print(f"  [1b] PropLine: {len(pl_props)} props (Pinnacle+PP included)")
+        except Exception as e:
+            print(f"  [1b] PropLine fetch failed: {e}")
 
         # ── [2] Curation → Discord ────────────────────────────
         from slipiq_curate import run_curation
