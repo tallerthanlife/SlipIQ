@@ -289,6 +289,12 @@ def run_curation(
     # Step 4: Log
     log_slate(slate, top_picks)
 
+    try:
+        from slipiq_parlay_alerts import post_parlay_alerts
+        post_parlay_alerts(slate)
+    except Exception:
+        pass
+
     # Step 5: Post to Discord
     curation_result = {
         "top_picks":    top_picks,

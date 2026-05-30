@@ -168,64 +168,84 @@ def _extract_stat_from_propline(stats: dict, pick: dict) -> float | None:
     return None
 
 
+def _fetch_with_timeout(player_name: str, game_date: str, timeout: int = 15) -> int | None:
+    import concurrent.futures
+
+    def _do_fetch():
+        # Try PropLine stats first (free, faster than pybaseball)
+        try:
+            from slipiq_propline import fetch_event_stats, fetch_scores
+            scores = fetch_scores(sport="baseball_mlb", days_from=2)
+            for game in scores:
+                home = game.get("home_team", "")
+                away = game.get("away_team", "")
+                pick = {"player": player_name, "market": "pitcher_strikeouts",
+                        "home_team": home, "away_team": away}
+                pick_team = pick.get("home_team", "") or pick.get("away_team", "")
+                if pick_team and (pick_team in home or pick_team in away):
+                    event_id = game.get("id")
+                    stats = fetch_event_stats(event_id, sport="baseball_mlb")
+                    if stats:
+                        result = _extract_stat_from_propline(stats, pick)
+                        if result is not None:
+                            print(f"  [sharp] PropLine: {player_name} on {game_date}: {int(result)} Ks")
+                            return int(result)
+        except Exception as e:
+            print(f"  [sharp] PropLine stats failed: {e} — falling back to pybaseball")
+
+        try:
+            # Lookup MLBAM ID
+            parts  = player_name.strip().split()
+            last   = parts[-1]
+            first  = parts[0]
+            lookup = pyb.playerid_lookup(last, first)
+
+            if lookup.empty:
+                print(f"  [sharp] Player not found: {player_name}")
+                return None
+
+            mlbam_id = int(lookup.iloc[0]["key_mlbam"])
+
+            # Pull Statcast for that date
+            log = pyb.statcast_pitcher(
+                start_dt=game_date,
+                end_dt=game_date,
+                player_id=mlbam_id
+            )
+
+            if log is None or log.empty:
+                print(f"  [sharp] No Statcast data for {player_name} on {game_date}")
+                return None
+
+            # Count strikeout events
+            ks = (log["events"] == "strikeout").sum()
+            print(f"  [sharp] {player_name} on {game_date}: {ks} Ks")
+            return int(ks)
+
+        except Exception as e:
+            print(f"  [sharp] Error fetching {player_name}: {e}")
+            return None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        future = ex.submit(_do_fetch)
+        try:
+            return future.result(timeout=timeout)
+        except Exception:
+            return None
+
+
 def fetch_pitcher_actual_ks(player_name: str, game_date: str) -> int | None:
     """
     Fetch actual strikeout total for a pitcher on a given date.
     Source: PropLine box score (primary), Statcast via pybaseball (fallback).
     Returns K total or None if not found.
     """
-    # Try PropLine stats first (free, faster than pybaseball)
+    import signal
+    # If pybaseball hangs, return None after 15 seconds
     try:
-        from slipiq_propline import fetch_event_stats, fetch_scores
-        scores = fetch_scores(sport="baseball_mlb", days_from=2)
-        for game in scores:
-            home = game.get("home_team", "")
-            away = game.get("away_team", "")
-            pick = {"player": player_name, "market": "pitcher_strikeouts",
-                    "home_team": home, "away_team": away}
-            pick_team = pick.get("home_team", "") or pick.get("away_team", "")
-            if pick_team and (pick_team in home or pick_team in away):
-                event_id = game.get("id")
-                stats = fetch_event_stats(event_id, sport="baseball_mlb")
-                if stats:
-                    result = _extract_stat_from_propline(stats, pick)
-                    if result is not None:
-                        print(f"  [sharp] PropLine: {player_name} on {game_date}: {int(result)} Ks")
-                        return int(result)
-    except Exception as e:
-        print(f"  [sharp] PropLine stats failed: {e} — falling back to pybaseball")
-
-    try:
-        # Lookup MLBAM ID
-        parts  = player_name.strip().split()
-        last   = parts[-1]
-        first  = parts[0]
-        lookup = pyb.playerid_lookup(last, first)
-
-        if lookup.empty:
-            print(f"  [sharp] Player not found: {player_name}")
-            return None
-
-        mlbam_id = int(lookup.iloc[0]["key_mlbam"])
-
-        # Pull Statcast for that date
-        log = pyb.statcast_pitcher(
-            start_dt=game_date,
-            end_dt=game_date,
-            player_id=mlbam_id
-        )
-
-        if log is None or log.empty:
-            print(f"  [sharp] No Statcast data for {player_name} on {game_date}")
-            return None
-
-        # Count strikeout events
-        ks = (log["events"] == "strikeout").sum()
-        print(f"  [sharp] {player_name} on {game_date}: {ks} Ks")
-        return int(ks)
-
-    except Exception as e:
-        print(f"  [sharp] Error fetching {player_name}: {e}")
+        result = _fetch_with_timeout(player_name, game_date, timeout=15)
+        return result
+    except Exception:
         return None
 
 
@@ -1048,8 +1068,12 @@ def run_sharp_review(game_date: str = None, post_to_discord: bool = True, sport:
 def run_all_sharp_reviews(game_date: str = None, post_to_discord: bool = True) -> dict:
     """Grade both MLB and NBA picks for the given date."""
     mlb = run_sharp_review(game_date=game_date, post_to_discord=post_to_discord, sport="mlb")
-    nba = run_nba_sharp_review(game_date=game_date, post_to_discord=post_to_discord)
-    return {"mlb": mlb, "nba": nba}
+    try:
+        nba_results = run_nba_sharp_review(game_date=game_date, post_to_discord=post_to_discord)
+    except Exception as e:
+        print(f"  [review] NBA review skipped: {e}")
+        nba_results = []
+    return {"mlb": mlb, "nba": nba_results}
 
 
 # ═════════════════════════════════════════
