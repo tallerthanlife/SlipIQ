@@ -753,6 +753,22 @@ def run_pitcher_model(sport_key: str = SPORT_MLB) -> list[dict]:
                       f"{market} line={card.get('line')} "
                       f"proj={card.get('projection')} — exceeds max {max_val}")
                 continue
+            # model_prob — P(over hits) via negative binomial CDF
+            try:
+                from scipy.stats import nbinom
+                _proj = card.get("projection", 5.0) or 5.0
+                _line = card.get("line", 4.5) or 4.5
+                _mu   = _proj
+                _r    = 3.0  # dispersion (typical for K distributions)
+                _p    = _r / (_r + _mu)
+                if card.get("direction") == "over":
+                    _model_prob = 1 - nbinom.cdf(int(_line), _r, _p)
+                else:
+                    _model_prob = nbinom.cdf(int(_line) - 1, _r, _p)
+                card["model_prob"] = round(float(_model_prob), 4)
+            except Exception:
+                card["model_prob"] = None
+
             raw_cards.append(card)
 
     # Step 4: Deduplicate — best confidence card per pitcher

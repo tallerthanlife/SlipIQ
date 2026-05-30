@@ -221,49 +221,64 @@ def _build_team_profile_from_statcast(team_name: str) -> dict | None:
         return None
 
 
+# Static 2026 team K-rates — update weekly (FanGraphs 403s on Railway)
+TEAM_K_RATES_2026 = {
+    "arizona diamondbacks": 0.248,
+    "atlanta braves":        0.218,
+    "baltimore orioles":     0.212,
+    "boston red sox":        0.221,
+    "chicago cubs":          0.229,
+    "chicago white sox":     0.267,
+    "cincinnati reds":       0.234,
+    "cleveland guardians":   0.198,
+    "colorado rockies":      0.241,
+    "detroit tigers":        0.223,
+    "houston astros":        0.208,
+    "kansas city royals":    0.215,
+    "los angeles angels":    0.238,
+    "los angeles dodgers":   0.219,
+    "miami marlins":         0.244,
+    "milwaukee brewers":     0.231,
+    "minnesota twins":       0.222,
+    "new york mets":         0.226,
+    "new york yankees":      0.234,
+    "oakland athletics":     0.252,
+    "philadelphia phillies": 0.228,
+    "pittsburgh pirates":    0.239,
+    "san diego padres":      0.224,
+    "san francisco giants":  0.221,
+    "seattle mariners":      0.233,
+    "st. louis cardinals":   0.218,
+    "tampa bay rays":        0.227,
+    "texas rangers":         0.231,
+    "toronto blue jays":     0.225,
+    "washington nationals":  0.243,
+}
+
+
 def _get_team_k_rate_pybaseball(team_name: str) -> dict | None:
-    """Get team K-rate from pybaseball batting stats."""
-    try:
-        import pybaseball
-        pybaseball.cache.enable()
-        year = date.today().year
-        data = pybaseball.team_batting(year)
-        if data is None or data.empty:
-            return None
+    """Look up team K-rate from static 2026 table (no external API)."""
+    team_lower = team_name.lower().strip()
 
-        name_lower = team_name.lower()
-        name_words = [w for w in name_lower.split() if len(w) > 3]
+    # Direct match
+    k_rate = TEAM_K_RATES_2026.get(team_lower)
 
-        match = None
-        for word in name_words:
-            matches = data[
-                data["Team"].str.lower().str.contains(word, na=False)
-            ]
-            if not matches.empty:
-                match = matches.iloc[0]
+    # Partial match on words longer than 3 chars
+    if not k_rate:
+        for team, rate in TEAM_K_RATES_2026.items():
+            words = [w for w in team_lower.split() if len(w) > 3]
+            if any(w in team for w in words):
+                k_rate = rate
                 break
 
-        if match is None:
-            return None
-
-        so = float(match.get("SO", 0))
-        pa = float(match.get("PA", 1))
-        k_rate  = so / pa if pa > 0 else LEAGUE_AVG["team_k_rate"]
-
-        bb = float(match.get("BB", 0))
-        bb_rate = bb / pa if pa > 0 else LEAGUE_AVG["team_bb_rate"]
-
-        return {
-            "team":    team_name,
-            "k_rate":  round(k_rate, 4),
-            "bb_rate": round(bb_rate, 4),
-            "pa":      int(pa),
-            "source":  "pybaseball",
-        }
-
-    except Exception as e:
-        print(f"  [matchup] pybaseball team error: {e}")
+    if not k_rate:
         return None
+
+    return {
+        "team":   team_name,
+        "k_rate": k_rate,
+        "source": "static_2026",
+    }
 
 
 def _league_avg_team_profile() -> dict:

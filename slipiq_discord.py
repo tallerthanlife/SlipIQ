@@ -211,8 +211,21 @@ def build_best_pick_embed(card: dict) -> dict:
             "inline": False,
     })
 
+    MARKET_LABELS = {
+        "pitcher_strikeouts":   "Strikeouts",
+        "pitcher_outs":         "Pitcher Outs",
+        "pitcher_hits_allowed": "Hits Allowed",
+        "pitcher_earned_runs":  "Earned Runs",
+        "batter_hits":          "Hits",
+        "batter_total_bases":   "Total Bases",
+        "batter_home_runs":     "Home Runs",
+        "batter_rbis":          "RBIs",
+    }
+    market       = card.get("market", "pitcher_strikeouts")
+    market_label = MARKET_LABELS.get(market, market.replace("_", " ").title())
+
     return {
-        "title":       f"⚾ SlipIQ Pick — {player} Strikeouts",
+        "title":       f"⚾ SlipIQ Pick — {player} {market_label}",
         "description": f"*Best pick of the day — {datetime.now().strftime('%A, %B %d')}*",
         "color":       _grade_color(grade),
         "fields":      fields,
