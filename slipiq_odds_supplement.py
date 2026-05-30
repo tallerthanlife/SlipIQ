@@ -254,7 +254,18 @@ def fetch_odds_api_strikeout_props(
     today     = date.today().isoformat()
     out: list[dict] = []
 
-    for event in events[:ODDS_MAX_EVENTS]:
+    # Build filtered event list — hard cap at 15
+    needed_pitchers = {p.lower() for p in players_needed or []}
+    events_to_check = []
+    for event in events:
+        home = event.get("home_team", "").lower()
+        away = event.get("away_team", "").lower()
+        events_to_check.append(event)
+
+    # Hard cap — never check more than 15 events
+    events_to_check = events_to_check[:15]
+
+    for event in events_to_check:
         import slipiq_cache
         if slipiq_cache._quota_exhausted:
             print("  [supplement] Quota exhausted — skipping remaining pitchers")
@@ -270,7 +281,18 @@ def fetch_odds_api_strikeout_props(
         game_date = commence[:10] if commence else today
 
         odds = _fetch_event_odds(event_id)
-        if not odds:
+
+        # Skip immediately if no props returned
+        if not odds or not odds.get("bookmakers"):
+            continue
+
+        # Skip if no pitcher strikeout market
+        has_k_market = any(
+            m.get("key") == "pitcher_strikeouts"
+            for bm in odds.get("bookmakers", [])
+            for m in bm.get("markets", [])
+        )
+        if not has_k_market:
             continue
 
         for bm in odds.get("bookmakers") or []:
@@ -376,6 +398,32 @@ def supplement_pitcher_strikeout_props(props: list[dict]) -> list[dict]:
           f"— running failsafe chain")
 
     targets = set(missing_pinnacle)
+
+    # Filter to only pitchers truly missing Pinnacle — check ParlayAPI cache first
+    try:
+        from slipiq_parlayapi import get_all_props, SPORT_MLB
+        cached_props = get_all_props(SPORT_MLB)
+        k_props = cached_props.get("pitcher_strikeouts", [])
+
+        has_pinnacle = {
+            p["player"].lower()
+            for p in k_props
+            if p.get("book", "").lower() == "pinnacle"
+        }
+
+        targets = {
+            p for p in targets
+            if p.lower() not in has_pinnacle
+        }
+
+        if not targets:
+            print("  [supplement] All pitchers have Pinnacle — skipping PropLine")
+            return []
+
+        print(f"  [supplement] {len(targets)} pitchers missing Pinnacle: {targets}")
+    except Exception as e:
+        print(f"  [supplement] ParlayAPI cache check failed: {e} — proceeding with all targets")
+
     extra: list[dict] = []
 
     # ── Failsafe 1: Prop-Line API ──────────────────────────────

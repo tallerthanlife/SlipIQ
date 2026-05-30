@@ -368,10 +368,18 @@ def fetch_all_props(
         if cached is not None:
             return cached
 
+    MAX_EVENTS_PER_RUN = 15  # never fetch more than 15 events
+
     events = fetch_events(sport, force=force)
     if not events:
         print(f"  [propline] No events — cannot fetch props for {sport}")
         return []
+
+    all_events = events
+    if len(all_events) > MAX_EVENTS_PER_RUN:
+        print(f"  [propline] Capping at {MAX_EVENTS_PER_RUN} events "
+              f"(had {len(all_events)}) — saves credits")
+    events = events[:MAX_EVENTS_PER_RUN]
 
     all_props: list[dict] = []
     for event in events:
