@@ -715,6 +715,17 @@ def run_pitcher_model(sport_key: str = SPORT_MLB) -> list[dict]:
             print(f"  [sanity] SKIPPED {player} — invalid market: {market}")
             continue
 
+        line = prop_data.get("sharp_line") or prop_data.get("line_consensus") or 0
+
+        if line > 15:
+            print(f"  [REJECTED] {player} line={line} "
+                  f"market={market} — line too high for pitcher prop")
+            continue
+
+        if line <= 0:
+            print(f"  [REJECTED] {player} line={line} — invalid line")
+            continue
+
         season_stats = season_lookup.get(player.lower(), {})
         recent_form  = get_pitcher_recent_form(player)
 

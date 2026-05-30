@@ -127,6 +127,28 @@ BATTER_PROP_KEYS = {
     "player_rbis_milestones",
 }
 
+# Normalize raw API market keys → internal canonical names
+MARKET_KEY_MAP = {
+    "player_strikeouts":            "pitcher_strikeouts",
+    "pitcher_strikeouts":           "pitcher_strikeouts",
+    "player_pitcher_strikeouts":    "pitcher_strikeouts",
+    "player_strike_outs":           "pitcher_strikeouts",
+    "batter_total_bases":           "batter_total_bases",
+    "player_total_bases":           "batter_total_bases",
+    "batter_hits":                  "batter_hits",
+    "player_hits":                  "batter_hits",
+    "batter_home_runs":             "batter_home_runs",
+    "player_home_runs":             "batter_home_runs",
+}
+
+# Markets that belong exclusively to the pitcher model
+PITCHER_ONLY_MARKETS = {
+    "pitcher_strikeouts",
+    "pitcher_hits_allowed",
+    "pitcher_earned_runs",
+    "pitcher_outs",
+}
+
 # ─────────────────────────────────────────
 # NBA MARKET KEY GROUPS
 # ─────────────────────────────────────────
@@ -476,6 +498,8 @@ def _is_real_player(name: str) -> bool:
 
 def _normalize(entry: dict) -> dict:
     book = entry.get("bookmaker", "")
+    raw_market       = entry.get("market_key", "").lower()
+    normalized_market = MARKET_KEY_MAP.get(raw_market, raw_market)
     return {
         "player":        entry.get("player", ""),
         "home_team":     entry.get("home_team"),
@@ -483,7 +507,8 @@ def _normalize(entry: dict) -> dict:
         "game_date":     entry.get("game_date"),
         "commence_time": entry.get("commence_time"),
         "event_id":      entry.get("event_id"),
-        "market_key":    entry.get("market_key", "").lower(),
+        "market_key":    normalized_market,
+        "market":        normalized_market,
         "book":          book,
         "book_title":    entry.get("bookmaker_title"),
         "line":          entry.get("line"),
@@ -533,9 +558,17 @@ def get_batter_props(sport_key: str = SPORT_MLB, stat: str = None) -> list[dict]
 def get_all_props(sport_key: str = SPORT_MLB) -> dict:
     """Single 3-credit call returns all prop types."""
     raw = fetch_props_raw(sport_key)
+    pitcher_strikeouts = _filter_props(raw, PITCHER_STRIKEOUT_KEYS)
+    pitcher_outs       = _filter_props(raw, PITCHER_OUTS_KEYS)
+    pitcher_props = [
+        p for p in pitcher_strikeouts + pitcher_outs
+        if p.get("market") in PITCHER_ONLY_MARKETS
+        and p.get("line", 99) <= 15  # hard cap — no pitcher stat exceeds 15
+    ]
     return {
-        "pitcher_strikeouts": _filter_props(raw, PITCHER_STRIKEOUT_KEYS),
-        "pitcher_outs":       _filter_props(raw, PITCHER_OUTS_KEYS),
+        "pitcher_strikeouts": pitcher_strikeouts,
+        "pitcher_outs":       pitcher_outs,
+        "pitcher_props":      pitcher_props,
         "batter_props":       _filter_props(raw, BATTER_PROP_KEYS),
     }
 
