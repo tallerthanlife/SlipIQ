@@ -528,7 +528,11 @@ def project_extra_pitcher_market(
     else:
         return 0.0
 
-    return round(projection * park_factor, 2)
+    result = round(projection * park_factor, 2)
+    print(f"  [extra_market] {market_key}: "
+          f"ip_per_start={expected_innings} "
+          f"projection={result}")
+    return result
 
 
 def build_extra_market_card(

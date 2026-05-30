@@ -280,6 +280,24 @@ def gate_pick(card: dict) -> dict:
               f"model={model_prob:.3f} "
               f"pp_threshold={'✅' if card['pp_threshold_met'] else '❌'}")
 
+    # Require meaningful edge — projection must differ from line by at least 10%
+    projection = card.get("projection", 0)
+    line       = card.get("line", 0)
+    if projection and line:
+        edge_gap = abs(projection - line)
+        edge_pct = edge_gap / line if line > 0 else 0
+        card["edge_gap"] = round(edge_gap, 2)
+        card["edge_pct"] = round(edge_pct * 100, 1)
+        if edge_pct < 0.10:
+            card["gate"]        = "SKIP"
+            card["gate_reason"] = (
+                f"Edge too small: proj={projection} line={line} "
+                f"gap={edge_gap:.2f} ({edge_pct * 100:.1f}%)"
+            )
+            print(f"  [gate] SKIP {card.get('player')} — "
+                  f"edge {edge_pct * 100:.1f}% < 10% minimum")
+            return card
+
     confidence       = card.get("confidence", 0)
     grade            = card.get("grade", "D")
     book_count       = card.get("book_count", 0)
