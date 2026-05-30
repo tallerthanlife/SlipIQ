@@ -695,7 +695,26 @@ def run_pitcher_model(sport_key: str = SPORT_MLB) -> list[dict]:
     print("\n[3] Building pick cards...")
     raw_cards = []
 
+    VALID_PITCHER_MARKETS = {
+        "pitcher_strikeouts",
+        "pitcher_outs",
+        "pitcher_hits_allowed",
+        "pitcher_earned_runs",
+        "pitcher_strikeouts_over_under",
+    }
+
+    MAX_REASONABLE = {
+        "pitcher_strikeouts":        15,
+        "pitcher_outs":              27,
+        "pitcher_hits_allowed":      12,
+        "pitcher_earned_runs":        8,
+    }
+
     for (player, market), prop_data in agg.items():
+        if market not in VALID_PITCHER_MARKETS:
+            print(f"  [sanity] SKIPPED {player} — invalid market: {market}")
+            continue
+
         season_stats = season_lookup.get(player.lower(), {})
         recent_form  = get_pitcher_recent_form(player)
 
@@ -708,6 +727,12 @@ def run_pitcher_model(sport_key: str = SPORT_MLB) -> list[dict]:
         )
 
         if card:
+            max_val = MAX_REASONABLE.get(market, 15)
+            if card.get("line", 0) > max_val or card.get("projection", 0) > max_val:
+                print(f"  [sanity] REJECTED {player} "
+                      f"{market} line={card.get('line')} "
+                      f"proj={card.get('projection')} — exceeds max {max_val}")
+                continue
             raw_cards.append(card)
 
     # Step 4: Deduplicate — best confidence card per pitcher

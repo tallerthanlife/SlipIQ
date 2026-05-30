@@ -1,10 +1,11 @@
 """
-BetOnline MLB prop scraper using Playwright.
+BetOnline MLB prop scraper — direct JSON API (no browser needed).
 Runs nightly at 10pm AZ, caches lines for morning pipeline.
 BetOnline posts MLB props 12-14 hours before game time.
 """
 import json
 import os
+import requests
 from datetime import date
 from pathlib import Path
 
@@ -28,79 +29,77 @@ def get_cached_lines() -> list[dict]:
 
 def scrape_betonline_mlb_props() -> list[dict]:
     """
-    Scrape BetOnline MLB pitcher props using Playwright.
-    Returns list of prop lines.
+    Fetch BetOnline MLB props via their internal JSON API.
+    BetOnline loads odds via XHR — we hit the endpoint directly.
+    No browser needed.
     """
     cached = get_cached_lines()
     if cached:
         return cached
 
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        print("  [betonline] Playwright not installed — pip install playwright")
-        return []
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                     "AppleWebKit/537.36 (KHTML, like Gecko) "
+                     "Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Referer": "https://www.betonline.ag/",
+        "Origin": "https://www.betonline.ag",
+    }
+
+    # BetOnline internal odds API endpoints
+    ENDPOINTS = [
+        "https://www.betonline.ag/api/sport/get-events?sportId=4&leagueId=1&period=0",
+        "https://www.betonline.ag/api/props/get-player-props?sportId=4",
+    ]
 
     lines = []
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-blink-features=AutomationControlled",
-            ]
-        )
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 720},
-        )
-        page = context.new_page()
-
+    for url in ENDPOINTS:
         try:
-            # BetOnline MLB player props URL
-            page.goto(
-                "https://www.betonline.ag/sportsbook/baseball/mlb",
-                wait_until="networkidle",
-                timeout=30000,
-            )
-
-            # Wait for props to load
-            page.wait_for_timeout(3000)
-
-            # Intercept the API calls BetOnline makes internally
-            # Their props load from their internal odds API
-            # We extract from the rendered DOM
-
-            prop_sections = page.query_selector_all(
-                "[class*='prop'], [class*='player-prop'], [data-market*='strikeout']"
-            )
-
-            for section in prop_sections:
-                try:
-                    text = section.inner_text()
-                    lines.append({"raw": text, "source": "betonline"})
-                except Exception:
-                    pass
-
+            r = requests.get(url, headers=HEADERS, timeout=15)
+            if r.status_code == 200:
+                data = r.json()
+                parsed = _parse_betonline_json(data)
+                lines.extend(parsed)
+                print(f"  [betonline] ✓ {len(parsed)} lines from {url}")
+            else:
+                print(f"  [betonline] HTTP {r.status_code} from {url}")
         except Exception as e:
-            print(f"  [betonline] Scrape error: {e}")
-        finally:
-            browser.close()
+            print(f"  [betonline] Error {url}: {e}")
 
-    # Cache results
     if lines:
         CACHE_PATH.parent.mkdir(exist_ok=True)
         CACHE_PATH.write_text(json.dumps({
             "date": str(date.today()),
             "lines": lines,
         }))
-        print(f"  [betonline] Scraped and cached {len(lines)} lines")
-    else:
-        print("  [betonline] No lines scraped — DOM structure may have changed")
 
+    return lines
+
+
+def _parse_betonline_json(data) -> list[dict]:
+    lines = []
+    try:
+        events = data if isinstance(data, list) else (
+            data.get("events") or data.get("data") or []
+        )
+        for event in events:
+            home = event.get("homeTeam") or event.get("home", "")
+            away = event.get("awayTeam") or event.get("away", "")
+            for market in (event.get("markets") or event.get("props") or []):
+                market_name = market.get("name", "").lower()
+                for outcome in market.get("outcomes") or market.get("selections") or []:
+                    lines.append({
+                        "source":    "betonline",
+                        "home_team": home,
+                        "away_team": away,
+                        "market":    market_name,
+                        "player":    outcome.get("participant") or outcome.get("name", ""),
+                        "outcome":   outcome.get("name", ""),
+                        "price":     outcome.get("price") or outcome.get("odds"),
+                        "point":     outcome.get("points") or outcome.get("line"),
+                    })
+    except Exception:
+        pass
     return lines
 
 

@@ -1,10 +1,11 @@
 """
-Bookmaker.eu MLB main line scraper using Playwright.
+Bookmaker.eu MLB main line scraper — direct JSON API (no browser needed).
 Used as the truest fair line source — line origin benchmark.
 Bookmaker.eu is where sharp syndicates hit first.
 Runs nightly, caches lines for morning EV calculation.
 """
 import json
+import requests
 from datetime import date
 from pathlib import Path
 
@@ -26,91 +27,35 @@ def get_cached_lines() -> list[dict]:
 
 
 def scrape_bookmaker_mlb() -> list[dict]:
-    """
-    Scrape Bookmaker.eu MLB lines using Playwright.
-    Focus: game lines (ML, spread, total) + any pitcher props available.
-    These are the truest prices in the market.
-    """
     cached = get_cached_lines()
     if cached:
         return cached
 
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        print("  [bookmaker] Playwright not installed")
-        return []
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                     "AppleWebKit/537.36",
+        "Accept": "application/json",
+        "Referer": "https://www.bookmaker.eu/",
+    }
+
+    ENDPOINTS = [
+        "https://www.bookmaker.eu/api/betting/events?sport=baseball&league=mlb",
+        "https://www.bookmaker.eu/api/odds/player-props?sport=baseball",
+    ]
 
     lines = []
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage",
-            ]
-        )
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 720},
-            locale="en-US",
-        )
-        page = context.new_page()
-
-        # Intercept API responses — Bookmaker loads odds via XHR
-        captured = []
-
-        def handle_response(response):
-            if "bookmaker" in response.url and response.status == 200:
-                ct = response.headers.get("content-type", "")
-                if "json" in ct:
-                    try:
-                        body = response.json()
-                        captured.append({
-                            "url": response.url,
-                            "body": body
-                        })
-                    except Exception:
-                        pass
-
-        page.on("response", handle_response)
-
+    for url in ENDPOINTS:
         try:
-            page.goto(
-                "https://www.bookmaker.eu/sports-betting/baseball/mlb",
-                wait_until="networkidle",
-                timeout=30000,
-            )
-            page.wait_for_timeout(4000)
-
-            # Also try their props page if it exists
-            try:
-                page.goto(
-                    "https://www.bookmaker.eu/sports-betting/baseball/mlb/player-props",
-                    wait_until="networkidle",
-                    timeout=15000,
-                )
-                page.wait_for_timeout(2000)
-            except Exception:
-                pass
-
-            # Parse captured XHR responses
-            for capture in captured:
-                parsed = _parse_bookmaker_response(capture["body"])
+            r = requests.get(url, headers=HEADERS, timeout=15)
+            if r.status_code == 200:
+                data = r.json()
+                parsed = _parse_bookmaker_response(data)
                 lines.extend(parsed)
-
-            # Fallback: parse DOM if XHR capture empty
-            if not lines:
-                lines = _parse_bookmaker_dom(page)
-
+                print(f"  [bookmaker] ✓ {len(parsed)} lines from {url}")
+            else:
+                print(f"  [bookmaker] HTTP {r.status_code} from {url}")
         except Exception as e:
-            print(f"  [bookmaker] Scrape error: {e}")
-        finally:
-            browser.close()
+            print(f"  [bookmaker] Error {url}: {e}")
 
     if lines:
         CACHE_PATH.parent.mkdir(exist_ok=True)
@@ -118,9 +63,6 @@ def scrape_bookmaker_mlb() -> list[dict]:
             "date": str(date.today()),
             "lines": lines,
         }))
-        print(f"  [bookmaker] Scraped and cached {len(lines)} lines")
-    else:
-        print("  [bookmaker] No lines captured")
 
     return lines
 
