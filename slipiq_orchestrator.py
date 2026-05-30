@@ -56,13 +56,10 @@ STATE_PATH = CACHE_DIR / "orchestrator_state.json"
 
 # ─── Schedule (AZ time) ───────────────────────────────────────
 SCHEDULE = {
-    "early":          "06:30",
-    "main":           "08:30",
-    "confirm":        "09:15",
-    "pp_start":       "10:00",   # PrizePicks scanner start
-    "pp_stop":        "22:00",   # PrizePicks scanner stop
-    "nightly_scrape": "22:00",
-    "review":         "23:00",
+    "early":   "06:30",
+    "main":    "08:30",
+    "confirm": "09:15",
+    "review":  "23:00",
 }
 
 LOOP_INTERVAL = 60   # scheduler tick (seconds)
@@ -89,19 +86,13 @@ def load_state() -> dict:
         except (json.JSONDecodeError, ValueError):
             pass
     return {
-        "date":              None,
-        "last_reset_date":   None,
-        "early_done":        False,
-        "main_done":         False,
-        "confirm_done":      False,
-        "pp_scanner_started":  False,
-        "review_done":         False,
-        "nightly_scrape_done": False,
-        "picks_posted":        0,
-        "last_run":          None,
-        "morning_done":      False,
-        "afternoon_done":    False,
-        "evening_done":      False,
+        "date":         None,
+        "early_done":   False,
+        "main_done":    False,
+        "confirm_done": False,
+        "review_done":  False,
+        "picks_posted": 0,
+        "last_run":     None,
     }
 
 
@@ -220,38 +211,30 @@ def run_early(state: dict) -> dict:
 # ═══════════════════════════════════════════════════════════════
 
 def run_main(state: dict, force_discord: bool = True) -> dict:
-    """
-    8:30 AM — Full MLB pipeline.
-    PIPELINE: [1] Props pull → [2] Curation → Discord
-    """
     print("\n" + "═" * 60)
     print("ORCHESTRATOR — MAIN RUN (8:30am AZ)")
     print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M AZ')}")
     print("═" * 60)
 
     try:
-        # ── [1] Props pull ────────────────────────────────────
         from slipiq_parlayapi import fetch_props_raw, SPORT_MLB
         from slipiq_propline import fetch_all_props
         print("\n  [1] Refreshing prop lines...")
         fetch_props_raw(SPORT_MLB, force=True)
         try:
             pl_props = fetch_all_props(sport="baseball_mlb")
-            print(f"  [1b] PropLine: {len(pl_props)} props (Pinnacle+PP included)")
+            print(f"  [1b] PropLine: {len(pl_props)} props loaded")
         except Exception as e:
-            print(f"  [1b] PropLine fetch failed: {e}")
+            print(f"  [1b] PropLine failed: {e}")
 
-        # ── [2] Curation → Discord ────────────────────────────
         from slipiq_curate import run_curation
-        print("\n  [2] Running curation pipeline...")
+        print("  [2] Running curation pipeline...")
         curation_result = run_curation(post_discord=force_discord)
 
         picks_posted = curation_result.get("post_count", 0)
+        state["main_done"] = True
+        state["picks_posted"] = picks_posted
         print(f"\n  ✅ Main run complete — {picks_posted} picks posted")
-
-        state["main_done"]      = True
-        state["main_done_date"] = datetime.now().strftime("%Y-%m-%d")
-        state["picks_posted"]   = picks_posted
 
     except Exception as e:
         import traceback
@@ -266,10 +249,6 @@ def run_main(state: dict, force_discord: bool = True) -> dict:
 # ═══════════════════════════════════════════════════════════════
 
 def run_confirm(state: dict) -> dict:
-    """
-    9:15 AM — Line-move refresh, post any remaining picks.
-    FIXED: post_discord= not post_to_discord=
-    """
     print("\n" + "═" * 60)
     print("ORCHESTRATOR — CONFIRM RUN (9:15am AZ)")
     print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M AZ')}")
@@ -277,22 +256,20 @@ def run_confirm(state: dict) -> dict:
 
     try:
         from slipiq_parlayapi import fetch_props_raw, check_line_movement, SPORT_MLB
-
         if check_line_movement(SPORT_MLB, threshold=0.5):
-            print("\n  [1] Line movement detected — refreshing props (3 credits)...")
+            print("\n  [1] Line movement — refreshing props...")
             fetch_props_raw(SPORT_MLB, force=True)
         else:
-            print("\n  [1] No line movement — using cached props (0 credits)")
+            print("\n  [1] No line movement — using cached props")
             fetch_props_raw(SPORT_MLB, force=False)
 
         from slipiq_curate import run_curation
         print("  [2] Running confirm curation...")
-        # FIXED: post_discord= not post_to_discord=
         result = run_curation(post_discord=True)
 
         new_picks = result.get("post_count", 0)
-        state["confirm_done"]  = True
-        state["picks_posted"] += new_picks
+        state["confirm_done"] = True
+        state["picks_posted"] = state.get("picks_posted", 0) + new_picks
         print(f"\n  ✅ Confirm run complete — {new_picks} additional picks posted")
 
     except Exception as e:
@@ -595,22 +572,6 @@ def run_scheduler() -> None:
                     save_state(state)
                     _pipeline_fired = True
 
-                elif should_run(SCHEDULE["pp_start"], state.get("pp_scanner_started", False)):
-                    print(f"\n[{now_str}] → PrizePicks scanner start")
-                    state = start_pp_scanner_run(state)
-                    save_state(state)
-                    _pipeline_fired = True
-
-                elif should_run(SCHEDULE["pp_stop"], False, window=5):
-                    print(f"\n[{now_str}] → PrizePicks scanner stop")
-                    _stop_pp_scanner()
-
-                elif should_run(SCHEDULE["nightly_scrape"], state.get("nightly_scrape_done", False)):
-                    print(f"\n[{now_str}] → Nightly sharp book scrape")
-                    state = run_nightly_scrape(state)
-                    save_state(state)
-                    _pipeline_fired = True
-
                 elif should_run(SCHEDULE["review"], state["review_done"]):
                     print(f"\n[{now_str}] → Sharp Review")
                     state = run_review(state)
@@ -687,16 +648,6 @@ def show_status() -> None:
         print(f"    {'✅' if tiers['tier_1_parlayapi'] else '❌'} Tier 1: ParlayAPI (primary)")
         print(f"    {'✅' if tiers['tier_2_propline'] else '❌'} Tier 2: Prop-Line (Pinnacle supplement)")
         print(f"    {'✅' if tiers['tier_3_odds_keys'] > 0 else '❌'} Tier 3: Odds API ({tiers['tier_3_odds_keys']} keys)")
-    except Exception:
-        pass
-
-    # Discord channel status
-    try:
-        from slipiq_env import discord_channels_status
-        channels = discord_channels_status()
-        print("\n  Discord channels:")
-        for k, v in channels.items():
-            print(f"    {'✅' if v else '❌'} {k}")
     except Exception:
         pass
 
