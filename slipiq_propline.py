@@ -437,6 +437,12 @@ def _normalize_event_odds(
 
     books_found = [b.get("key") or b.get("name") for b in bookmakers]
     print(f"  [propline] Books in response: {books_found}")
+    SHARP_BOOKS_WANTED = ["betonline", "bookmaker", "circa", "pinnacle", "novig"]
+    sharp_found = [b for b in books_found if any(s in (b or "").lower() for s in SHARP_BOOKS_WANTED)]
+    if sharp_found:
+        print(f"  [propline] ✅ Sharp books found: {sharp_found}")
+    else:
+        print(f"  [propline] ⚠️  No sharp books in this event — books: {books_found}")
 
     for bm in bookmakers:
         bm_key      = (bm.get("key") or bm.get("book_key") or "").lower()

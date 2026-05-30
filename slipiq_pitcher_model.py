@@ -279,6 +279,7 @@ def build_pick_card(
     recent_form: dict,
     opponent_k_rate: float = None,
     park_factor: float = 1.0,
+    pp_lines: list = None,
 ) -> dict | None:
 
     line = prop_data.get("sharp_line") or prop_data.get("line_consensus")
@@ -317,6 +318,23 @@ def build_pick_card(
             proj["matchup_boost"] = round(k_adjustment * 0.3 * 100, 1)
     except Exception:
         pass
+
+    # Get PrizePicks line for this pitcher
+    pp_line_val    = None
+    pp_edge_val    = None
+    recommendation = None
+    try:
+        from slipiq_prizepicks import get_pitcher_k_line
+        pp_match = get_pitcher_k_line(player_name, pp_lines)
+        if pp_match:
+            pp_line_val    = pp_match["line_score"]
+            pp_edge_val    = round(proj["projection"] - pp_line_val, 2)
+            recommendation = "OVER" if proj["projection"] > pp_line_val else "UNDER"
+            print(f"  [pp] {player_name}: proj={proj['projection']} "
+                  f"pp_line={pp_line_val} "
+                  f"edge={pp_edge_val:+.2f}")
+    except Exception as e:
+        print(f"  [pp] {player_name} line error: {e}")
 
     edge       = score_edge(proj["projection"], line, ev_over, ev_under)
     confidence = score_confidence(proj, edge, book_count, lines_book_count)
@@ -400,6 +418,11 @@ def build_pick_card(
         "trend":         trend,
         "recent_k_list": proj.get("recent_k_list"),
         "flags":         flags,
+
+        # PrizePicks cross-reference
+        "pp_line":        pp_line_val,
+        "pp_edge":        pp_edge_val,
+        "recommendation": recommendation,
 
         # Pinnacle anchors (top-level for EV engine access)
         "pinnacle_over":  pinnacle.get("over_price")  if pinnacle else None,
@@ -599,6 +622,14 @@ def run_pitcher_model(sport_key: str = SPORT_MLB) -> list[dict]:
     print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M AZ')}")
     print("=" * 60)
 
+    from slipiq_prizepicks import fetch_prizepicks_lines
+    pp_lines: list = []
+    try:
+        pp_lines = fetch_prizepicks_lines(sport="baseball_mlb")
+        print(f"  [pp] Loaded {len(pp_lines)} PrizePicks lines")
+    except Exception as e:
+        print(f"  [pp] PrizePicks fetch skipped: {e}")
+
     # Step 1: Props
     print("\n[1] Loading prop lines...")
     all_props = get_all_props(sport_key)
@@ -645,6 +676,7 @@ def run_pitcher_model(sport_key: str = SPORT_MLB) -> list[dict]:
             prop_data    = prop_data,
             season_stats = season_stats,
             recent_form  = recent_form,
+            pp_lines     = pp_lines,
         )
 
         if card:
