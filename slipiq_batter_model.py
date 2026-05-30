@@ -2,6 +2,8 @@
 # ═══════════════════════════════════════════════════════════════
 # SlipIQ Batter Model — Projection + EV scoring for batter props
 #
+# run_batter_model(sport_key=SPORT_MLB, min_confidence=55, markets=None) -> list[dict]
+#
 # WHAT CHANGED (rebuild):
 #   score_batter_edge() — fake ev_conf = (ev_val or 0) > 0.02 removed.
 #   Now calls slipiq_ev_engine.assess_leg() with real Pinnacle prices.
@@ -17,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 import numpy as np
 
-from slipiq_mlb_data import get_batter_k_rates
+from slipiq_mlb_data import get_batter_k_rates, get_pitcher_recent_form
 from slipiq_batter_lines import get_batter_lines, SPORT_MLB, PRIMARY_MARKETS
 from slipiq_grading import calc_grade
 
@@ -526,7 +528,10 @@ def run_batter_model(
         except Exception:
             season_stats = {}
 
-        recent_form = {}
+        try:
+            recent_form = get_pitcher_recent_form(player) or {}
+        except Exception:
+            recent_form = {}
 
         card = build_batter_pick_card(
             player_name  = player,

@@ -74,9 +74,16 @@ class SlateClock:
 
     # ─── Public API ───────────────────────────────────────────
 
-    def get_fire_windows(self, force_refresh: bool = False) -> dict:
+    def get_fire_windows(
+        self,
+        force_refresh: bool = False,
+        games: list[dict] | None = None,
+    ) -> dict:
         """
         Compute fire windows for today's slate.
+
+        Args:
+            games: if provided, use directly instead of reading from cache.
 
         Returns:
         {
@@ -87,10 +94,11 @@ class SlateClock:
             "total_games": 12,
         }
         """
-        if self._windows and not force_refresh:
+        if self._windows and not force_refresh and games is None:
             return self._windows
 
-        games = self._load_today_games()
+        if games is None:
+            games = self._load_today_games()
         self._games   = games
         self._windows = self._compute_windows(games)
         return self._windows
@@ -270,8 +278,10 @@ class SlateClock:
 
     # ─── Window Computation ───────────────────────────────────
 
-    def _compute_windows(self, games: list[dict]) -> dict:
+    def _compute_windows(self, games: list[dict] | None = None) -> dict:
         """Sort games into morning/afternoon/evening windows."""
+        if games is None:
+            games = self._load_today_games()
         today = datetime.now(AZ_TZ).date()
 
         morning_games   = []
@@ -375,6 +385,21 @@ class SlateClock:
 
         delta_minutes = (now - fire_dt).total_seconds() / 60
         return 0 <= delta_minutes <= FIRE_WINDOW_MINUTES
+
+
+# ═══════════════════════════════════════════════════════════════
+# CONVENIENCE FACTORY
+# ═══════════════════════════════════════════════════════════════
+
+def build_schedule(games: list[dict] | None = None) -> "SlateClock":
+    """
+    Create a SlateClock pre-loaded with the provided games list.
+    If games is None, falls back to reading from cache.
+    Returns the clock instance so callers can use .slate_summary() etc.
+    """
+    clock = SlateClock()
+    clock.get_fire_windows(games=games)
+    return clock
 
 
 # ═══════════════════════════════════════════════════════════════

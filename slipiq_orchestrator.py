@@ -261,6 +261,7 @@ def run_main(state: dict, force_discord: bool = True) -> dict:
             print(f"  [slate] Game fetch failed: {e} — using fallback")
 
         # Load today's game schedule from PropLine (free endpoint)
+        all_games = []
         try:
             from slipiq_propline import fetch_events, fetch_scores
             # Try scores first (includes in-progress and recent games)
@@ -283,8 +284,8 @@ def run_main(state: dict, force_discord: bool = True) -> dict:
         try:
             from slipiq_discord import post_message
             from slipiq_env import DISCORD_DAILY_PICKS_CHANNEL
-            from slipiq_slate_clock import SlateClock
-            clock   = SlateClock()
+            from slipiq_slate_clock import build_schedule
+            clock   = build_schedule(games=all_games)
             windows = clock.get_fire_windows()
             total   = windows.get("total_games", 0)
             summary = clock.slate_summary()

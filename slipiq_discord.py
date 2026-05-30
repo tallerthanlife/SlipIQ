@@ -15,6 +15,7 @@
 #   sharp_review   → post-game result + CLV grade
 
 import json
+import time
 import requests
 from datetime import datetime
 from pathlib import Path
@@ -204,6 +205,17 @@ def build_best_pick_embed(card: dict) -> dict:
         },
         "timestamp": datetime.utcnow().isoformat(),
     }
+
+
+def build_pick_embed(card: dict, rank: int = 1, total: int = 1) -> dict:
+    """
+    Per-pick embed wrapper around build_best_pick_embed().
+    Adds rank context (e.g. "Pick 2 of 5") to the embed title.
+    """
+    embed = build_best_pick_embed(card)
+    if total > 1:
+        embed["title"] = f"{embed.get('title', 'SlipIQ Pick')}  [{rank}/{total}]"
+    return embed
 
 
 def build_morning_brief_embed(slate: dict) -> dict:
@@ -423,20 +435,15 @@ def post_morning_brief(slate: dict) -> bool:
     brief_embed = build_morning_brief_embed(slate)
     post_message(DISCORD_DAILY_PICKS_CHANNEL, embed=brief_embed)
 
-    # Best pick card
-    best = slate.get("best_pick")
-    if best:
-        # Generate SGP narrative if applicable
-        try:
-            from slipiq_writer import write_best_pick_headline
-            headline = write_best_pick_headline(best)
-            if headline:
-                post_message(DISCORD_DAILY_PICKS_CHANNEL,
-                             content=f"⭐ **{headline}**")
-        except Exception:
-            pass
-        pick_embed = build_best_pick_embed(best)
-        return post_message(DISCORD_DAILY_PICKS_CHANNEL, embed=pick_embed)
+    # Post each pick as its own message
+    picks = slate.get("post_list") or []
+    if not picks and slate.get("best_pick"):
+        picks = [slate["best_pick"]]
+
+    for i, pick in enumerate(picks):
+        embed = build_pick_embed(pick, rank=i + 1, total=len(picks))
+        post_message(DISCORD_DAILY_PICKS_CHANNEL, embed=embed)
+        time.sleep(0.5)  # avoid rate limiting
 
     return True
 
