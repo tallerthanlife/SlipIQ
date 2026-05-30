@@ -612,6 +612,22 @@ def build_pick_card(
             "recent_starts":      proj.get("recent_starts"),
         },
     }
+    try:
+        from slipiq_matchup import adjust_pitcher_projection
+        opponent = pick.get("away_team") or pick.get("home_team") or ""
+        if opponent:
+            matchup = adjust_pitcher_projection(
+                base_projection=pick["projection"],
+                opponent_team=opponent,
+                pitcher_name=pick.get("player", ""),
+            )
+            pick["projection"] = matchup["adjusted_projection"]
+            pick["matchup_grade"] = matchup["matchup_grade"]
+            pick["opp_k_rate"] = matchup["opp_k_rate"]
+            pick["opp_k_vs_avg"] = matchup["opp_k_vs_avg"]
+            pick["matchup_boost"] = matchup["adjustment_pct"]
+    except Exception as e:
+        print(f"  [matchup] {pick.get('player')} failed: {e}")
     pick["bookmakers"] = prop.get("bookmakers", [])
     pick["_event_id"] = prop.get("_event_id", "")
     books = [b.get("key", "?") for b in pick.get("bookmakers", [])]

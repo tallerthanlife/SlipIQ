@@ -600,6 +600,165 @@ def _extract_stat(stats: dict, player: str, market: str):
     return None
 
 
+def settle_todays_picks() -> list[dict]:
+    """
+    Auto-settle today's picks using PropLine box scores.
+    Called at 23:00 AZ nightly.
+    """
+    from pathlib import Path
+    import json
+    from datetime import date
+
+    settled = []
+
+    # Load today's picks from cache
+    picks_path = Path("cache/latest_picks.json")
+    if not picks_path.exists():
+        print("  [review] No picks to settle — cache/latest_picks.json missing")
+        return []
+
+    with open(picks_path) as f:
+        data = json.load(f)
+
+    picks = data.get("top_picks", [])
+    if not picks:
+        print("  [review] No picks in latest_picks.json")
+        return []
+
+    print(f"  [review] Settling {len(picks)} picks...")
+
+    # Get today's scores from PropLine
+    try:
+        from slipiq_propline import fetch_scores
+        scores = fetch_scores(sport="baseball_mlb", days_from=1)
+        print(f"  [review] Loaded {len(scores)} game scores")
+    except Exception as e:
+        print(f"  [review] PropLine scores failed: {e}")
+        scores = []
+
+    for pick in picks:
+        player = pick.get("player", "")
+        market = pick.get("market", "pitcher_strikeouts")
+        line = pick.get("line") or pick.get("pp_line")
+        direction = pick.get("direction", "over").lower()
+
+        if not player or not line:
+            continue
+
+        # Find the game for this pick
+        game = _find_game(pick, scores)
+        if not game:
+            print(f"  [review] Game not found for {player}")
+            pick["result"] = "PENDING"
+            settled.append(pick)
+            continue
+
+        # Get box score
+        event_id = game.get("id")
+        actual = _get_actual_stat(event_id, player, market)
+
+        if actual is None:
+            print(f"  [review] No stat found for {player}")
+            pick["result"] = "PENDING"
+            settled.append(pick)
+            continue
+
+        # Grade it
+        if direction == "over":
+            result = "WIN" if actual > line else "LOSS"
+        else:
+            result = "WIN" if actual < line else "LOSS"
+
+        pick["actual"] = actual
+        pick["result"] = result
+        pick["settled_at"] = str(date.today())
+
+        emoji = "✅" if result == "WIN" else "❌"
+        print(f"  [review] {emoji} {player}: actual={actual} "
+              f"{'>' if direction=='over' else '<'} {line} → {result}")
+        settled.append(pick)
+
+    # Save results
+    results_path = Path("cache/record.json")
+    _update_record(settled, results_path)
+
+    return settled
+
+
+def _find_game(pick: dict, scores: list) -> dict | None:
+    home = (pick.get("home_team") or "").lower()
+    away = (pick.get("away_team") or "").lower()
+    for game in scores:
+        gh = game.get("home_team", "").lower()
+        ga = game.get("away_team", "").lower()
+        if (home and (home in gh or gh in home)) or \
+           (away and (away in ga or ga in away)):
+            return game
+    return None
+
+
+def _get_actual_stat(event_id: str, player: str,
+                      market: str) -> float | None:
+    if not event_id:
+        return None
+    try:
+        from slipiq_propline import fetch_event_stats
+        stats = fetch_event_stats(event_id, sport="baseball_mlb")
+        if not stats:
+            return None
+        player_lower = player.lower()
+        players = stats.get("players") or stats.get("player_stats") or []
+        for p in players:
+            name = (p.get("name") or p.get("player") or "").lower()
+            if player_lower in name or name in player_lower:
+                if "strikeout" in market:
+                    return p.get("strikeouts") or p.get("pitcher_strikeouts")
+                elif "hit" in market:
+                    return p.get("hits")
+                elif "total_base" in market:
+                    return p.get("total_bases")
+                elif "earned_run" in market:
+                    return p.get("earned_runs")
+    except Exception as e:
+        print(f"  [review] Stats fetch failed: {e}")
+    return None
+
+
+def _update_record(settled: list, record_path) -> dict:
+    import json
+    from pathlib import Path
+
+    record = {}
+    if record_path.exists():
+        with open(record_path) as f:
+            record = json.load(f)
+
+    wins = record.get("hits", 0)
+    losses = record.get("misses", 0)
+
+    for pick in settled:
+        result = pick.get("result")
+        if result == "WIN":
+            wins += 1
+        elif result == "LOSS":
+            losses += 1
+
+    total = wins + losses
+    hit_rate = round(wins / total * 100, 1) if total > 0 else 0.0
+
+    record["hits"] = wins
+    record["misses"] = losses
+    record["total"] = total
+    record["hit_rate"] = hit_rate
+    record["last_updated"] = str(__import__("datetime").date.today())
+
+    with open(record_path, "w") as f:
+        json.dump(record, f, indent=2)
+
+    print(f"  [record] All-time: {wins}W {losses}L ({hit_rate}%)")
+    return record
+
+
 def settle_picks_from_propline() -> int | None:
     """
     Auto-grade today's picks using PropLine box scores.

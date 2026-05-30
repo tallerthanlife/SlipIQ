@@ -364,45 +364,44 @@ def stop_pp_scanner_run(state: dict) -> dict:
 # ═══════════════════════════════════════════════════════════════
 
 def run_review(state: dict) -> dict:
-    """
-    11:00 PM — Grade today's picks, CLV, calibration report.
-    Posts to #sharp-review channel.
-    """
     print("\n" + "═" * 60)
-    print("ORCHESTRATOR — SHARP REVIEW (11:00pm AZ)")
+    print("ORCHESTRATOR — SHARP REVIEW (11pm AZ)")
     print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M AZ')}")
     print("═" * 60)
 
     try:
-        today = datetime.now().strftime("%Y-%m-%d")
+        from slipiq_sharp_review import settle_todays_picks
+        settled = settle_todays_picks()
 
-        from slipiq_sharp_review import run_all_sharp_reviews
-        print(f"\n  Grading picks for {today}...")
-        review_out = run_all_sharp_reviews(
-            game_date    = today,
-            post_to_discord = True,
-        )
-        results = review_out.get("mlb", []) + review_out.get("nba", [])
+        wins = [p for p in settled if p.get("result") == "WIN"]
+        losses = [p for p in settled if p.get("result") == "LOSS"]
+        pending = [p for p in settled if p.get("result") == "PENDING"]
 
-        # Calibration summary
+        print(f"\n  Settled: {len(wins)}W {len(losses)}L {len(pending)} pending")
+
+        # Post results to Discord
         try:
-            from slipiq_calibration import calibration_summary, format_calibration_discord
-            from slipiq_discord import post_message
-            from slipiq_env import DISCORD_SHARP_REVIEW_CHANNEL
-
-            summary = calibration_summary(days=30)
-            cal_msg = format_calibration_discord(summary)
-            if DISCORD_SHARP_REVIEW_CHANNEL:
-                post_message(DISCORD_SHARP_REVIEW_CHANNEL, content=cal_msg[:2000])
-                print("  [calibration] Calibration summary posted")
+            import json
+            from pathlib import Path
+            from slipiq_discord import post_results
+            record_path = Path("cache/record.json")
+            record = {}
+            if record_path.exists():
+                with open(record_path) as f:
+                    record = json.load(f)
+            if wins or losses:
+                post_results(settled, record)
+                print(f"  [results] Posted {len(wins)}W-{len(losses)}L to #sharp-review")
         except Exception as e:
-            print(f"  [calibration] Summary error: {e}")
+            print(f"  [results] Post failed: {e}")
 
         state["review_done"] = True
-        print(f"\n  ✅ Sharp Review — {len(results)} picks graded")
+        print(f"\n  ✅ Sharp review complete")
 
     except Exception as e:
-        print(f"\n  ❌ Sharp Review error: {e}")
+        import traceback
+        print(f"\n  ❌ Sharp review error: {e}")
+        print(traceback.format_exc())
 
     return state
 

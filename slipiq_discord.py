@@ -547,6 +547,63 @@ def post_sharp_review(player: str, pick_direction: str, line: float,
     return post_message(DISCORD_SHARP_REVIEW_CHANNEL, embed=embed)
 
 
+def post_results(settled: list, record: dict) -> bool:
+    """Post last night's results to #sharp-review channel."""
+    if not settled:
+        return False
+
+    wins = [p for p in settled if p.get("result") == "WIN"]
+    losses = [p for p in settled if p.get("result") == "LOSS"]
+    pending = [p for p in settled if p.get("result") == "PENDING"]
+
+    total = len(wins) + len(losses)
+    if total == 0:
+        return False
+
+    record_str = f"{len(wins)}-{len(losses)}"
+    hit_rate = round(len(wins) / total * 100) if total > 0 else 0
+    all_time = record.get("hit_rate", 0)
+
+    lines = []
+    for pick in settled:
+        result = pick.get("result", "PENDING")
+        emoji = "✅" if result == "WIN" else "❌" if result == "LOSS" else "⏳"
+        player = pick.get("player", "")
+        direction = pick.get("direction", "over").upper()
+        line = pick.get("line") or pick.get("pp_line", "?")
+        actual = pick.get("actual", "?")
+        market = (pick.get("market") or "strikeouts").replace(
+            "pitcher_", "").replace("_", " ").title()
+        lines.append(
+            f"{emoji} **{player}** {direction} {line} {market} "
+            f"| Actual: {actual}"
+        )
+
+    description = "\n".join(lines)
+
+    from datetime import date
+    embed = {
+        "title": f"📊 SlipIQ Results — {date.today().strftime('%B %d, %Y')}",
+        "description": description,
+        "color": 0x00FF88 if hit_rate >= 55 else 0xFF8800,
+        "fields": [
+            {
+                "name": "Today's Record",
+                "value": f"**{record_str}** ({hit_rate}%)",
+                "inline": True,
+            },
+            {
+                "name": "All-Time Record",
+                "value": f"{record.get('hits',0)}W-{record.get('misses',0)}L ({all_time}%)",
+                "inline": True,
+            },
+        ],
+        "footer": {"text": "SlipIQ · Model-driven. Sharp-anchored."},
+    }
+
+    return post_message(DISCORD_SHARP_REVIEW_CHANNEL, embed=embed)
+
+
 def post_waiting_message() -> bool:
     """
     Post early morning waiting message to #daily-picks.
