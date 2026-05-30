@@ -121,6 +121,12 @@ DISCORD_SHARP_REVIEW_CHANNEL = _get(
     "CHANNEL_SHARP_REVIEW",
 )
 
+# Daily results post (falls back to sharp review channel if not set separately)
+DISCORD_RESULTS_CHANNEL = _get(
+    "DISCORD_RESULTS_CHANNEL",
+    "CHANNEL_RESULTS",
+) or DISCORD_SHARP_REVIEW_CHANNEL
+
 # AI slip builder chat
 CHANNEL_SLIPIQ_CHAT = _get("CHANNEL_SLIPIQ_CHAT")
 

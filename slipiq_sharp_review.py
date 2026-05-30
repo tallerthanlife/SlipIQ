@@ -24,7 +24,7 @@
 #   Resets never — cumulative all-time record
 
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pybaseball as pyb
@@ -570,6 +570,129 @@ def run_nba_sharp_review(game_date: str = None, post_to_discord: bool = True) ->
     return results
 
 
+def _find_game_for_pick(pick: dict, scores: list) -> dict | None:
+    home = (pick.get("home_team") or "").lower()
+    away = (pick.get("away_team") or "").lower()
+    for game in scores:
+        gh = game.get("home_team", "").lower()
+        ga = game.get("away_team", "").lower()
+        if home in gh or away in ga or gh in home or ga in away:
+            return game
+    return None
+
+
+def _extract_stat(stats: dict, player: str, market: str):
+    player_lower = player.lower()
+    players = stats.get("players") or stats.get("player_stats") or []
+    for p in players:
+        name = (p.get("name") or p.get("player") or "").lower()
+        if player_lower in name or name in player_lower:
+            if "strikeout" in market:
+                return p.get("strikeouts") or p.get("pitcher_strikeouts")
+            elif "hit" in market:
+                return p.get("hits") or p.get("batter_hits")
+            elif "total_base" in market:
+                return p.get("total_bases")
+            elif "earned_run" in market:
+                return p.get("earned_runs")
+            elif "out" in market:
+                return p.get("outs_recorded")
+    return None
+
+
+def settle_picks_from_propline() -> int | None:
+    """
+    Auto-grade today's picks using PropLine box scores.
+    Called at 11pm AZ after games end.
+    """
+    from slipiq_propline import fetch_scores, fetch_event_stats
+    from slipiq_db import load_todays_picks, update_pick_result
+
+    picks = load_todays_picks()
+    if not picks:
+        print("  [review] No picks to settle")
+        return
+
+    scores = fetch_scores(sport="baseball_mlb", days_from=1)
+    settled = 0
+
+    for pick in picks:
+        player    = pick.get("player", "")
+        market    = pick.get("market", "").lower()
+        line      = pick.get("line") or pick.get("pp_line")
+        direction = pick.get("direction", "over")
+
+        game = _find_game_for_pick(pick, scores)
+        if not game:
+            continue
+
+        event_id = game.get("id")
+        stats = fetch_event_stats(event_id, sport="baseball_mlb")
+        if not stats:
+            continue
+
+        actual = _extract_stat(stats, player, market)
+        if actual is None:
+            continue
+
+        if direction == "over":
+            result = "WIN" if actual > line else "LOSS"
+        else:
+            result = "WIN" if actual < line else "LOSS"
+
+        pick["actual"]  = actual
+        pick["result"]  = result
+        pick["settled"] = True
+
+        update_pick_result(pick)
+        settled += 1
+        print(f"  [review] {player}: actual={actual} line={line} → {result}")
+
+    print(f"  [review] Settled {settled}/{len(picks)} picks")
+    return [p for p in picks if p.get("settled")]
+
+
+def post_results_to_discord(settled_picks: list) -> None:
+    """Post yesterday's results to Discord after settlement."""
+    if not settled_picks:
+        return
+
+    wins   = [p for p in settled_picks if p.get("result") == "WIN"]
+    losses = [p for p in settled_picks if p.get("result") == "LOSS"]
+    record = f"{len(wins)}-{len(losses)}"
+
+    lines = []
+    for p in settled_picks:
+        emoji     = "✅" if p.get("result") == "WIN" else "❌"
+        player    = p.get("player", "")
+        direction = p.get("direction", "over").upper()
+        line      = p.get("pp_line") or p.get("line")
+        actual    = p.get("actual", "?")
+        market    = (
+            p.get("market", "")
+            .replace("pitcher_", "")
+            .replace("_", " ")
+            .title()
+        )
+        lines.append(
+            f"{emoji} {player} {direction} {line} {market} "
+            f"| Actual: {actual}"
+        )
+
+    win_rate = round(len(wins) / len(settled_picks) * 100) if settled_picks else 0
+
+    message = (
+        f"📊 **SlipIQ Results — {date.today().strftime('%B %d')}**\n\n"
+        f"**Record: {record} ({win_rate}%)**\n\n"
+        + "\n".join(lines)
+        + "\n\n_SlipIQ · Model-driven. Sharp-anchored. Always improving._"
+    )
+
+    from slipiq_env import DISCORD_RESULTS_CHANNEL
+    post_message(DISCORD_RESULTS_CHANNEL, message)
+    print(f"  [results] Posted {record} to Discord")
+
+
 def run_sharp_review(game_date: str = None, post_to_discord: bool = True, sport: str = "mlb") -> list[dict]:
     """
     Full Sharp Review pipeline for a given date.
@@ -577,6 +700,13 @@ def run_sharp_review(game_date: str = None, post_to_discord: bool = True, sport:
     """
     if sport == "nba":
         return run_nba_sharp_review(game_date=game_date, post_to_discord=post_to_discord)
+
+    # Auto-settle today's picks via PropLine box scores before grading
+    try:
+        settled_picks = settle_picks_from_propline() or []
+        post_results_to_discord(settled_picks)
+    except Exception as e:
+        print(f"  [review] PropLine settle skipped: {e}")
 
     if not game_date:
         game_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
