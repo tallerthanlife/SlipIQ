@@ -269,6 +269,116 @@ def score_confidence(
 
 
 # ═════════════════════════════════════════
+# REAL CONFIDENCE MODEL
+# ═════════════════════════════════════════
+
+def calculate_real_confidence(pitcher_stats: dict,
+                               projection: float,
+                               line: float,
+                               direction: str) -> tuple[int, str, list]:
+    """
+    Real confidence score based on actual pitcher data.
+    Returns (confidence_pct, grade, reasons)
+    """
+    score = 50.0  # baseline
+    reasons = []
+
+    # 1. PROJECTION EDGE — how far projection is from line
+    edge = projection - line if direction == "over" else line - projection
+    edge_pct = edge / line if line > 0 else 0
+
+    if edge_pct >= 0.20:
+        score += 18
+        reasons.append(f"Strong edge +{edge_pct*100:.0f}%")
+    elif edge_pct >= 0.12:
+        score += 12
+        reasons.append(f"Good edge +{edge_pct*100:.0f}%")
+    elif edge_pct >= 0.06:
+        score += 6
+        reasons.append(f"Moderate edge +{edge_pct*100:.0f}%")
+    elif edge_pct < 0:
+        score -= 8  # projection goes against direction
+
+    # 2. RECENT FORM — last 5 starts K consistency
+    last_5 = pitcher_stats.get("last_5_ks", [])
+    if len(last_5) >= 3:
+        avg_last5 = sum(last_5) / len(last_5)
+        above_line = sum(1 for k in last_5 if k > line)
+        hit_rate = above_line / len(last_5)
+
+        if direction == "over":
+            if hit_rate >= 0.80:
+                score += 15
+                reasons.append(f"Hit OVER in {above_line}/{len(last_5)} last starts")
+            elif hit_rate >= 0.60:
+                score += 8
+                reasons.append(f"Hit OVER in {above_line}/{len(last_5)} last starts")
+            elif hit_rate <= 0.20:
+                score -= 10
+                reasons.append(f"Only hit OVER {above_line}/{len(last_5)} starts")
+        else:
+            under_rate = 1 - hit_rate
+            if under_rate >= 0.80:
+                score += 15
+                reasons.append(f"Hit UNDER in {len(last_5)-above_line}/{len(last_5)} last starts")
+            elif under_rate >= 0.60:
+                score += 8
+
+    # 3. LAST 10 STARTS CONSISTENCY
+    last_10 = pitcher_stats.get("last_10_ks", [])
+    if len(last_10) >= 5:
+        above_10 = sum(1 for k in last_10 if k > line)
+        rate_10 = above_10 / len(last_10)
+        if direction == "over":
+            if rate_10 >= 0.70:
+                score += 8
+            elif rate_10 <= 0.30:
+                score -= 8
+        else:
+            if rate_10 <= 0.30:
+                score += 8
+            elif rate_10 >= 0.70:
+                score -= 8
+
+    # 4. STRIKEOUT RATE TREND
+    k_per_9 = pitcher_stats.get("k_per_9") or 0
+    if k_per_9 >= 10.0:
+        score += 8
+        reasons.append(f"Elite K rate {k_per_9:.1f}/9")
+    elif k_per_9 >= 8.5:
+        score += 4
+    elif k_per_9 < 6.5:
+        score -= 6
+
+    # 5. OPPONENT K RATE
+    opp_k_rate = pitcher_stats.get("opp_k_rate") or 0.225
+    if opp_k_rate >= 0.250:
+        score += 7
+        reasons.append(f"Opp Ks {opp_k_rate*100:.1f}% (high)")
+    elif opp_k_rate <= 0.190:
+        score -= 7
+        reasons.append(f"Opp Ks {opp_k_rate*100:.1f}% (low)")
+
+    # Cap and grade
+    confidence = max(50, min(92, int(score)))
+
+    if confidence >= 80:
+        grade = "A+"
+    elif confidence >= 74:
+        grade = "A"
+    elif confidence >= 68:
+        grade = "B+"
+    elif confidence >= 62:
+        grade = "B"
+    elif confidence >= 56:
+        grade = "C+"
+    else:
+        grade = "C"
+
+    return confidence, grade, reasons
+
+
+# ═════════════════════════════════════════
 # PICK CARD BUILDER
 # ═════════════════════════════════════════
 
@@ -341,10 +451,18 @@ def build_pick_card(
     except Exception as e:
         print(f"  [pp] {player_name} line error: {e}")
 
-    edge       = score_edge(proj["projection"], line, ev_over, ev_under)
-    confidence = score_confidence(proj, edge, book_count, lines_book_count)
-
+    edge      = score_edge(proj["projection"], line, ev_over, ev_under)
     direction = edge.get("direction", "")
+
+    _pitcher_stats = {
+        "last_5_ks":  (recent_form.get("k_per_start") or [])[-5:],
+        "last_10_ks": (recent_form.get("k_per_start") or [])[-10:],
+        "k_per_9":    season_stats.get("k_per_9"),
+        "opp_k_rate": proj.get("matchup_k_rate") or prop_data.get("matchup_k_rate"),
+    }
+    confidence, grade, conf_reasons = calculate_real_confidence(
+        _pitcher_stats, proj["projection"], line, direction
+    )
     books_display = build_books_display(entries, direction) if entries else {}
     books_row     = format_books_row(books_display)
     if not books_row and entries:
@@ -405,9 +523,10 @@ def build_pick_card(
         "diff":          edge.get("diff"),
 
         # Signals
-        "grade":         edge.get("grade"),
+        "grade":         grade,
         "signal":        edge.get("signal"),
         "confidence":    confidence,
+        "conf_reasons":  conf_reasons,
         "ev_value":      edge.get("ev_value"),
         "ev":            edge.get("ev_value"),
         "ev_confirmed":  edge.get("ev_confirmed"),

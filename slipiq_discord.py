@@ -249,9 +249,17 @@ def build_best_pick_embed(card: dict) -> dict:
     market       = card.get("market", "pitcher_strikeouts")
     market_label = MARKET_LABELS.get(market, market.replace("_", " ").title())
 
+    conf_reasons = card.get("conf_reasons", [])
+    if conf_reasons:
+        _description = " · ".join(conf_reasons[:2])
+    else:
+        _direction = card.get("direction", "over").upper()
+        _edge = card.get("projection", 0) - card.get("line", 0)
+        _description = f"Model projects {_direction} by {abs(_edge):.2f}"
+
     return {
         "title":       f"⚾ SlipIQ Pick — {player} {market_label}",
-        "description": f"*Best pick of the day — {datetime.now().strftime('%A, %B %d')}*",
+        "description": _description,
         "color":       _grade_color(grade),
         "fields":      fields,
         "footer": {
@@ -283,33 +291,21 @@ def build_morning_brief_embed(slate: dict) -> dict:
     post_list  = slate.get("post_list", [])
     lean_mode  = slate.get("lean_mode", False)
 
-    # Build pick summary lines
-    pick_lines = []
-    for card in post_list[:5]:  # cap at 5 in brief
-        grade     = card.get("grade", "?")
-        if lean_mode and card.get("gate") == "LEAN":
-            grade = f"{grade} LEAN"
-        player    = card.get("player", "")
-        direction = card.get("direction", "").upper()
-        line      = card.get("line")
-        conf      = card.get("confidence", 0)
-        ev_conf = card.get("ev_confirmed", False)
-        ev_val  = card.get("ev")
-        ev_src  = card.get("ev_source", "none")
-        if ev_val is not None and ev_src == "ev_engine_pinnacle":
-            ev_tag = f" | EV {'+' if ev_val >= 0 else ''}{ev_val*100:.1f}%"
-        elif ev_conf:
-            ev_tag = " ✅"
-        else:
-            ev_tag = ""
-
-        bk_row  = card.get("books_row", "")
-        bk_snip = f"\n   {bk_row}" if bk_row else ""
-        pick_lines.append(
-            f"`[{grade}]` {player} — {direction} {line} | {conf}%{ev_tag}{bk_snip}"
+    picks_summary = ""
+    for i, pick in enumerate(post_list, 1):
+        conf = pick.get("confidence", 0)
+        grade = pick.get("grade", "B")
+        player = pick.get("player", "")
+        direction = pick.get("direction", "over").upper()
+        line = pick.get("line", 0)
+        proj = pick.get("projection", 0)
+        edge = abs(proj - line)
+        picks_summary += (
+            f"{i}. **{player}** {direction} {line} "
+            f"[{grade}] {conf}% | edge +{edge:.2f}\n"
         )
 
-    picks_str = "\n".join(pick_lines) if pick_lines else "No postable picks yet."
+    picks_str = picks_summary if picks_summary else "No postable picks yet."
 
     fields = [
         {
@@ -757,8 +753,6 @@ def run_discord_post(slate: dict = None) -> bool:
             market       = pick.get("market") or pick.get("market_key", "pitcher_strikeouts")
             market_label = MARKET_LABELS.get(market, market.replace("_", " ").title())
             embed["title"] = f"⚾ SlipIQ Pick — {pick.get('player')} {market_label}"
-            if i == 0:
-                embed["description"] = f"Best pick of the day — {datetime.now().strftime('%A, %B %d')}"
 
             ok = post_message(DISCORD_DAILY_PICKS_CHANNEL, embed=embed)
             if ok:
