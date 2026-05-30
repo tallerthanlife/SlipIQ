@@ -560,10 +560,17 @@ def get_all_props(sport_key: str = SPORT_MLB) -> dict:
     raw = fetch_props_raw(sport_key)
     pitcher_strikeouts = _filter_props(raw, PITCHER_STRIKEOUT_KEYS)
     pitcher_outs       = _filter_props(raw, PITCHER_OUTS_KEYS)
+    PITCHER_MARKET_CAPS = {
+        "pitcher_strikeouts":   15,
+        "pitcher_hits_allowed": 12,
+        "pitcher_earned_runs":   8,
+        "pitcher_outs":         24,
+        "pitcher_walks":         8,
+    }
     pitcher_props = [
         p for p in pitcher_strikeouts + pitcher_outs
-        if p.get("market") in PITCHER_ONLY_MARKETS
-        and p.get("line", 99) <= 15  # hard cap — no pitcher stat exceeds 15
+        if p.get("market") in PITCHER_MARKET_CAPS
+        and p.get("line", 999) <= PITCHER_MARKET_CAPS.get(p.get("market"), 15)
     ]
     return {
         "pitcher_strikeouts": pitcher_strikeouts,
