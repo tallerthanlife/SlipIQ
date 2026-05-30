@@ -323,12 +323,27 @@ def run_full_curation(sport_key: str = SPORT_MLB) -> dict:
 # ═══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    result = run_curation()
-    print(f"\nCuration complete: {result['post_count']} picks posted")
-    routing = result.get("routing", {})
-    if routing:
-        stats = routing.get("stats", {})
-        print(f"Routing: SGP={stats.get('sgp',0)} | "
-              f"Indep={stats.get('indep',0)} | "
-              f"PP={stats.get('pp_queue',0)} | "
-              f"Lotto={stats.get('lotto',0)}")
+    import sys
+    no_discord = "--no-discord" in sys.argv
+    result = run_curation(post_discord=not no_discord)
+
+    print("\n" + "=" * 60)
+    print("CURATION SUMMARY")
+    print("=" * 60)
+
+    best = result.get("best_pick")
+    if best:
+        print(f"\n  ★ Best Pick: {best.get('player')}")
+        print(f"    {best.get('direction','').upper()} {best.get('line')} Ks")
+        print(f"    Grade: {best.get('grade')} | Confidence: {best.get('confidence')}%")
+
+    top = result.get("top_picks", [])
+    if top:
+        print(f"\n  Top {len(top)} picks:")
+        for i, card in enumerate(top, 1):
+            print(f"  {i}. [{card.get('grade')}] {card.get('player')} "
+                  f"{card.get('direction','').upper()} {card.get('line')} "
+                  f"| {card.get('confidence')}%")
+
+    print(f"\n  Market open: {result.get('market_open')}")
+    print(f"  Picks posted: {result.get('post_count', 0)}")
