@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 import numpy as np
 
-from slipiq_mlb_data import get_batter_k_rates, get_pitcher_recent_form
+from slipiq_mlb_data import get_batter_k_rates, get_pitcher_recent_form, get_all_batter_stats
 from slipiq_batter_lines import get_batter_lines, SPORT_MLB, PRIMARY_MARKETS
 from slipiq_grading import calc_grade
 
@@ -526,12 +526,28 @@ def run_batter_model(
         print("    No batter lines available.")
         return []
 
+    # Batch-fetch all batter stats once — avoids N+1 pybaseball calls in the loop
+    all_batter_stats = get_all_batter_stats()
+
     cards = []
     print(f"\n[2] Building pick cards...")
     ev_engine_count = 0
     fallback_count  = 0
 
+    INVALID_PLAYER_NAMES = {
+        "total", "over", "under", "game", "team",
+        "first half", "second half", "period", ""
+    }
+
     for (player, market), prop_data in lines.items():
+        if not player:
+            continue
+        if player.lower().strip() in INVALID_PLAYER_NAMES:
+            continue
+        if len(player.split()) < 2:
+            # Real player names have at least first + last name
+            continue
+
         # get_batter_statcast returns full DataFrame — filter for this player
         try:
             from slipiq_mlb_data import get_batter_statcast_season
@@ -553,10 +569,7 @@ def run_batter_model(
         except Exception:
             season_stats = {}
 
-        try:
-            batter_form = get_pitcher_recent_form(player) or {}
-        except Exception:
-            batter_form = {}
+        batter_form = all_batter_stats.get(player.lower(), {})
 
         card = build_batter_pick_card(
             player_name  = player,
