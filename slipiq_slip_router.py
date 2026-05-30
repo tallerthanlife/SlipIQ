@@ -54,7 +54,7 @@ SGP_MIN_EV       = 0.03    # minimum per-leg EV to include in SGP
 INDEP_MIN_EV     = 0.02    # minimum per-leg EV for independent parlay
 ML_RL_MIN_EV     = 0.02    # minimum EV for ML/RL independent parlay leg
 LOTTO_MIN_PROB   = 0.60    # minimum true_prob for lotto slip (absolute, not EV)
-PP_MIN_PROB_4PK  = prizepicks_leg_threshold(4) + 0.02  # 4-pick buffer
+PP_MIN_PROB_4PK  = PRIZEPICKS_LEG_THRESHOLD + 0.02  # 4-pick buffer
 
 # ─── Market classifications ───────────────────────────────────
 SGP_ELIGIBLE_PITCHER = {
