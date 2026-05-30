@@ -221,8 +221,9 @@ def sync_json_to_supabase():
 def pick_entry_from_log(pick, result=None):
     """Build a results entry dict from a pipeline pick."""
     today = date.today().strftime("%Y-%m-%d")
-    direction = "OVER" if "OVER" in pick["recommendation"] else "UNDER"
-    grade = pick.get("grade") or pick["recommendation"].split("Grade: ")[-1].split(" |")[0].strip()
+    rec = pick.get("recommendation") or ""
+    direction = "OVER" if "OVER" in rec else "UNDER"
+    grade = pick.get("grade") or (rec.split("Grade: ")[-1].split(" |")[0].strip() if "Grade: " in rec else "B")
 
     entry = {
         "date": today,

@@ -22,7 +22,8 @@ def log_pick(pick, result=None):
     """Log a pick (JSON + Supabase upsert)."""
     results = load_results()
     today = date.today().strftime("%Y-%m-%d")
-    direction = "OVER" if "OVER" in pick["recommendation"] else "UNDER"
+    rec = pick.get("recommendation") or ""
+    direction = "OVER" if "OVER" in rec else "UNDER"
 
     for entry in results:
         if (

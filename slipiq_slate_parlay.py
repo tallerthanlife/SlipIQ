@@ -122,7 +122,8 @@ def build_slate_parlay(pitcher_picks, batter_picks):
 
         # Add pitcher K leg
         if best_pitcher and scenario != "WEAK":
-            direction = "OVER" if "OVER" in best_pitcher["recommendation"] else "UNDER"
+            rec = best_pitcher.get("recommendation") or ""
+            direction = "OVER" if "OVER" in rec else "UNDER"
             parlay_legs.append({
                 "type": "pitcher",
                 "game": game_key,
@@ -157,7 +158,8 @@ def build_slate_parlay(pitcher_picks, batter_picks):
 
         # Add best batter TB leg
         if best_batter_tb:
-            direction = "OVER" if "OVER" in best_batter_tb["recommendation"] else "UNDER"
+            rec = best_batter_tb.get("recommendation") or ""
+            direction = "OVER" if "OVER" in rec else "UNDER"
             parlay_legs.append({
                 "type": "batter",
                 "game": game_key,

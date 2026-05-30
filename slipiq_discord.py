@@ -722,7 +722,15 @@ def run_discord_post(slate: dict = None) -> bool:
         with open(slate_path) as f:
             slate = json.load(f)
 
-    post_list  = slate.get("post_list", [])
+    post_list = slate.get("post_list", [])
+    if not post_list:
+        # Try loading from cache as fallback
+        slate_path = CACHE_DIR / "agent_slate.json"
+        if slate_path.exists():
+            with open(slate_path) as f:
+                cached = json.load(f)
+            post_list = cached.get("post_list", [])
+
     post_count = len(post_list)
     print(f"\n  [discord] Posting slate: {post_count} picks to #daily-picks")
 
@@ -730,10 +738,12 @@ def run_discord_post(slate: dict = None) -> bool:
         print("  [discord] No picks in post_list — posting brief only")
         return post_morning_brief(slate)
 
-    # 1. Morning brief summary card
+    # Post morning brief first
     post_morning_brief(slate)
 
-    # 2. Individual pick card for every pick (not just best pick)
+    # Post each pick as individual card
+    import time
+    posted = 0
     MARKET_LABELS = {
         "pitcher_strikeouts":   "Strikeouts",
         "pitcher_outs":         "Pitcher Outs",
@@ -743,27 +753,30 @@ def run_discord_post(slate: dict = None) -> bool:
         "batter_total_bases":   "Total Bases",
         "batter_home_runs":     "Home Runs",
         "batter_rbis":          "RBIs",
+        "player_strikeouts":    "Strikeouts",
+        "player_hits":          "Hits",
+        "player_total_bases":   "Total Bases",
     }
-    posted = 0
+
     for i, pick in enumerate(post_list):
         try:
             embed = build_best_pick_embed(pick)
-            market       = pick.get("market", "pitcher_strikeouts")
+            market       = pick.get("market") or pick.get("market_key", "pitcher_strikeouts")
             market_label = MARKET_LABELS.get(market, market.replace("_", " ").title())
-            embed["title"] = (
-                f"⚾ SlipIQ Pick — {pick.get('player')} {market_label}"
-            )
+            embed["title"] = f"⚾ SlipIQ Pick — {pick.get('player')} {market_label}"
             if i == 0:
-                embed["description"] = "Best pick of the day"
+                embed["description"] = f"Best pick of the day — {datetime.now().strftime('%A, %B %d')}"
 
-            success = post_message(DISCORD_DAILY_PICKS_CHANNEL, embed=embed)
-            if success:
+            ok = post_message(DISCORD_DAILY_PICKS_CHANNEL, embed=embed)
+            if ok:
                 posted += 1
                 print(f"  [discord] Posted {pick.get('player')} ({posted}/{post_count})")
+            else:
+                print(f"  [discord] FAILED {pick.get('player')}")
             time.sleep(1.5)
         except Exception as e:
             import traceback
-            print(f"  [discord] ERROR on {pick.get('player', '?')}: {e}")
+            print(f"  [discord] ERROR {pick.get('player', '?')}: {e}")
             print(traceback.format_exc())
 
     print(f"  [discord] {posted}/{post_count} picks posted")

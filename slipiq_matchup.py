@@ -21,6 +21,26 @@ LEAGUE_AVG = {
 # Matchup weight — how much matchup adjusts projection
 MATCHUP_WEIGHT = 0.30  # 30% of projection comes from matchup
 
+# Module-level scores cache — fetched once per day
+_scores_cache: list | None = None
+_scores_cache_date: str | None = None
+
+
+def get_cached_scores(sport: str = "baseball_mlb") -> list:
+    global _scores_cache, _scores_cache_date
+    today = str(date.today())
+    if _scores_cache and _scores_cache_date == today:
+        return _scores_cache
+    try:
+        from slipiq_propline import fetch_scores
+        _scores_cache = fetch_scores(sport=sport, days_from=14)
+        _scores_cache_date = today
+        print(f"  [matchup] Loaded {len(_scores_cache)} scores (cached)")
+    except Exception as e:
+        print(f"  [matchup] Scores fetch failed: {e}")
+        _scores_cache = []
+    return _scores_cache or []
+
 
 def get_team_matchup_profile(team_name: str) -> dict:
     """
@@ -193,32 +213,8 @@ def adjust_batter_projection(
 
 
 def _build_team_profile_from_statcast(team_name: str) -> dict | None:
-    """Build team K-rate profile from PropLine scores/stats."""
-    try:
-        from slipiq_propline import fetch_scores
-        scores = fetch_scores(sport="baseball_mlb", days_from=14)
-
-        team_lower = team_name.lower()
-        team_games = [
-            g for g in scores
-            if (team_lower in g.get("home_team", "").lower() or
-                team_lower in g.get("away_team", "").lower())
-        ]
-
-        if not team_games:
-            return None
-
-        total_games = len(team_games)
-        if total_games == 0:
-            return None
-
-        # PropLine scores don't include per-game K data directly;
-        # fall through to pybaseball season batting stats
-        return _get_team_k_rate_pybaseball(team_name)
-
-    except Exception as e:
-        print(f"  [matchup] Team profile error for {team_name}: {e}")
-        return None
+    # Use static table — PropLine scores don't have K-rate data
+    return _get_team_k_rate_pybaseball(team_name)
 
 
 # Static 2026 team K-rates — update weekly (FanGraphs 403s on Railway)
