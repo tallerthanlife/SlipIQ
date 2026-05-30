@@ -250,6 +250,14 @@ def run_main(state: dict, force_discord: bool = True) -> dict:
     print("═" * 60)
 
     try:
+        # Pre-populate game schedule so SlateClock cache is not empty
+        try:
+            from slipiq_game_lines import get_probable_starters
+            games = get_probable_starters(force=True)
+            print(f"  [slate] Loaded {len(games)} games for today")
+        except Exception as e:
+            print(f"  [slate] Game fetch failed: {e} — using fallback")
+
         # Alert Discord that a new slate window was detected
         try:
             from slipiq_discord import post_message

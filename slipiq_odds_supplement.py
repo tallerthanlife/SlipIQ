@@ -33,6 +33,10 @@ import requests
 from slipiq_cache import get_event_odds_cached, get_events_cached
 from slipiq_env import ODDS_API_KEYS, ODDS_MAX_EVENTS, PROPLINE_API_KEY
 
+# Mirrors slipiq_cache._quota_exhausted — checked before each event fetch
+# to skip all remaining Odds API calls once quota is confirmed exhausted.
+_quota_exhausted = False
+
 CACHE_DIR  = Path("cache")
 ODDS_BASE  = "https://api.the-odds-api.com/v4"
 MARKET_KEY = "player_pitcher_strikeouts"
@@ -251,6 +255,11 @@ def fetch_odds_api_strikeout_props(
     out: list[dict] = []
 
     for event in events[:ODDS_MAX_EVENTS]:
+        import slipiq_cache
+        if slipiq_cache._quota_exhausted:
+            print("  [supplement] Quota exhausted — skipping remaining pitchers")
+            break
+
         event_id = event.get("id")
         if not event_id:
             continue

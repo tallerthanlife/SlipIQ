@@ -22,6 +22,10 @@ import json
 import os
 from datetime import datetime, date
 
+# Early-exit flag — set True when any Odds API key returns 422 (quota exhausted)
+# Checked by slipiq_odds_supplement to skip remaining events immediately.
+_quota_exhausted: bool = False
+
 CACHE_DIR = "cache"
 
 from slipiq_env import (
@@ -287,7 +291,9 @@ def get_event_odds_cached(
             if r.status_code == 422:
                 # Quota exhausted — this key is dead
                 print(f"  [cache] Odds API 422 (quota exhausted) — trying next key")
-                continue
+                global _quota_exhausted
+                _quota_exhausted = True
+                break  # stop trying all keys for this event
             if r.status_code != 200:
                 continue
 

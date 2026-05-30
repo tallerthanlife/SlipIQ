@@ -222,8 +222,8 @@ def fetch_propline_props(
 
     print(f"  [propline] Fetching props {sport} (~2 cr)...")
     raw = _get(
-        endpoint=f"props/{sport}",
-        params={"apiKey": PROPLINE_API_KEY},
+        endpoint="props",
+        params={"apiKey": PROPLINE_API_KEY, "sport": sport},
         credits=2,
     )
 
