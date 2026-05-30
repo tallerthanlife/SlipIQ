@@ -3,16 +3,25 @@
 # SlipIQ — Prop-Line API Integration
 # Role: Dynamic intraday polling + primary Pinnacle line source
 # Budget: 1,000 credits/day
-# Base URL: https://api.prop-odds.com  (confirm with your key docs)
+# Base URL: https://api.prop-line.com/v1
+#
+# CORRECT API FLOW (two steps per sport):
+#   Step 1: GET /sports/{sport}/events?apiKey=KEY
+#             → list of events (id, home_team, away_team, commence_time)
+#   Step 2: GET /sports/{sport}/events/{id}/odds?markets=...&apiKey=KEY
+#             → bookmakers array including Pinnacle
+#   There is NO bulk /props endpoint.
 #
 # CREDIT STRATEGY:
-#   Dynamic poll (20-min interval)  : ~1-2 cr/call × 36 polls = ~54 cr/day
-#   Pinnacle prop pull               : included in props endpoint
-#   Daily ceiling with 20% buffer   : 800 cr effective limit
-#   Remaining headroom               : 200 cr for emergency re-pulls
+#   fetch_events()    : 1 cr/sport
+#   fetch_event_odds(): 1 cr/event  (up to ~15 events/day = ~15 cr)
+#   fetch_scores()    : 1 cr/call   (30-min cache)
+#   fetch_event_stats(): 1 cr/event (permanent cache once final)
+#   Daily ceiling: 800 cr effective limit (200 cr headroom)
 #
 # OUTPUT CONTRACT:
-#   All functions return data in the SAME shape as slipiq_parlayapi.py
+#   All fetch_all_props() / fetch_propline_props() output matches
+#   slipiq_parlayapi.py aggregate_by_player() input shape.
 #   Downstream modules (ev_engine, confidence_agent) are source-agnostic.
 # ═══════════════════════════════════════════════════════════════
 
@@ -20,10 +29,9 @@ from __future__ import annotations
 
 import json
 import os
-import time
+from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
-from collections import defaultdict
 
 import requests
 from dotenv import load_dotenv
@@ -31,23 +39,18 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ─── Config ───────────────────────────────────────────────────
-PROPLINE_API_KEY = os.getenv("PROPLINE_API_KEY")
-# Prop-Line API base — update if their docs specify a different path
-BASE_URL   = "https://api.prop-line.com/v1"
-HEADERS    = {
-    "x-api-key": PROPLINE_API_KEY or "",
-    "Accept":    "application/json",
-}
+from slipiq_env import PROPLINE_API_KEY
 
+BASE_URL  = "https://api.prop-line.com/v1"
 CACHE_DIR = Path("cache")
 CACHE_DIR.mkdir(exist_ok=True)
 
-# Sport keys (confirm with Prop-Line documentation)
+# Sport keys
 SPORT_MLB  = "baseball_mlb"
 SPORT_NBA  = "basketball_nba"
 SPORT_WNBA = "basketball_wnba"
 
-# Book keys used by Prop-Line
+# Book keys
 BOOK_PINNACLE   = "pinnacle"
 BOOK_DRAFTKINGS = "draftkings"
 BOOK_FANATICS   = "fanatics"
@@ -56,13 +59,22 @@ BOOK_FANDUEL    = "fanduel"
 PREFERRED_BOOKS = (BOOK_DRAFTKINGS, BOOK_FANATICS, BOOK_FANDUEL)
 SHARP_BOOKS     = (BOOK_PINNACLE,)
 
-# Dynamic polling cache TTL — 20 minutes
-POLL_CACHE_TTL_MINUTES = 20
+# Prop markets to request from odds endpoint
+DEFAULT_MARKETS = (
+    "pitcher_strikeouts,"
+    "pitcher_earned_runs,"
+    "batter_hits,"
+    "batter_total_bases"
+)
 
-# Daily credit tracker file
-CREDIT_LOG = CACHE_DIR / "propline_credits.json"
+# Cache TTLs
+POLL_CACHE_TTL_MINUTES   = 20       # intraday prop polls
+SCORES_CACHE_TTL_MINUTES = 30       # scores change frequently
+EVENTS_CACHE_TTL_MINUTES = 24 * 60  # event list: once per day
+STATS_CACHE_TTL_MINUTES  = 365 * 24 * 60  # box scores: permanent once final
 
-# Daily budget ceiling (leave 20% buffer)
+# Daily credit tracker
+CREDIT_LOG         = CACHE_DIR / "propline_credits.json"
 DAILY_CREDIT_LIMIT = 800
 
 
@@ -87,13 +99,10 @@ def _save_credit_log(log: dict) -> None:
 
 
 def _spend_credits(amount: int, endpoint: str) -> bool:
-    """
-    Track credit spend. Returns False if budget would be exceeded.
-    Blocks the call if over daily limit.
-    """
+    """Returns False and skips the call if daily budget would be exceeded."""
     log = _load_credit_log()
     if log["used"] + amount > DAILY_CREDIT_LIMIT:
-        print(f"  [propline] ⚠️  Daily credit limit ({DAILY_CREDIT_LIMIT}) would be exceeded. Skipping {endpoint}.")
+        print(f"  [propline] ⚠️  Daily limit ({DAILY_CREDIT_LIMIT} cr) would be exceeded — skipping {endpoint}.")
         return False
     log["used"] += amount
     log["calls"].append({
@@ -118,7 +127,7 @@ def get_daily_credit_usage() -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════
-# SECTION 2 — CACHE HELPERS (same pattern as slipiq_parlayapi.py)
+# SECTION 2 — CACHE HELPERS
 # ═══════════════════════════════════════════════════════════════
 
 def _cache_path(key: str) -> Path:
@@ -162,13 +171,14 @@ def _cache_age_minutes(key: str) -> float | None:
 
 
 # ═══════════════════════════════════════════════════════════════
-# SECTION 3 — RAW API FETCHERS
+# SECTION 3 — HTTP HELPER
 # ═══════════════════════════════════════════════════════════════
 
 def _get(endpoint: str, params: dict = None, credits: int = 1) -> dict | list | None:
     """
-    Core HTTP GET with credit tracking and error handling.
-    Returns None on failure — callers must handle gracefully.
+    Core GET with credit tracking, apiKey injection, and error handling.
+    apiKey is always injected into query params per Prop-Line auth spec.
+    Returns None on any failure — callers must handle gracefully.
     """
     if not PROPLINE_API_KEY:
         print("  [propline] ⚠️  PROPLINE_API_KEY not set in .env")
@@ -178,12 +188,21 @@ def _get(endpoint: str, params: dict = None, credits: int = 1) -> dict | list | 
         return None
 
     url = f"{BASE_URL}/{endpoint.lstrip('/')}"
+    merged_params = {"apiKey": PROPLINE_API_KEY}
+    if params:
+        merged_params.update(params)
+
     try:
-        resp = requests.get(url, headers=HEADERS, params=params or {}, timeout=15)
+        resp = requests.get(
+            url,
+            params  = merged_params,
+            headers = {"Accept": "application/json"},
+            timeout = 15,
+        )
         resp.raise_for_status()
         return resp.json()
     except requests.exceptions.HTTPError as e:
-        print(f"  [propline] HTTP error {resp.status_code} on {endpoint}: {e}")
+        print(f"  [propline] HTTP {resp.status_code} on {endpoint}: {e}")
         return None
     except requests.exceptions.Timeout:
         print(f"  [propline] Timeout on {endpoint}")
@@ -193,209 +212,278 @@ def _get(endpoint: str, params: dict = None, credits: int = 1) -> dict | list | 
         return None
 
 
+# ═══════════════════════════════════════════════════════════════
+# SECTION 4 — API FUNCTIONS
+# ═══════════════════════════════════════════════════════════════
+
+def fetch_events(sport: str = SPORT_MLB, force: bool = False) -> list[dict]:
+    """
+    GET /sports/{sport}/events?apiKey=KEY
+    Returns list of today's events with id, home_team, away_team, commence_time.
+    Cached for the full day (one call per sport per day).
+    Cost: 1 credit.
+    """
+    today     = datetime.now().strftime("%Y-%m-%d")
+    cache_key = f"events_{sport}_{today}"
+
+    if not force:
+        cached = _cache_read(cache_key, max_age_minutes=EVENTS_CACHE_TTL_MINUTES)
+        if cached is not None:
+            return cached
+
+    print(f"  [propline] GET /sports/{sport}/events (1 cr)...")
+    raw = _get(f"sports/{sport}/events", credits=1)
+    if not raw:
+        print(f"  [propline] No events returned for {sport}")
+        return []
+
+    events = raw if isinstance(raw, list) else (raw.get("data") or raw.get("events") or [])
+    _cache_write(cache_key, events)
+    print(f"  [propline] ✓ {len(events)} events for {sport}")
+    return events
+
+
+def fetch_event_odds(
+    event_id: str,
+    sport:    str = SPORT_MLB,
+    markets:  str = DEFAULT_MARKETS,
+    force:    bool = False,
+) -> dict | None:
+    """
+    GET /sports/{sport}/events/{event_id}/odds?markets=...&apiKey=KEY
+    Returns raw odds dict with bookmakers array (includes Pinnacle).
+    Cached per event per day.
+    Cost: 1 credit per event.
+    """
+    today     = datetime.now().strftime("%Y-%m-%d")
+    cache_key = f"event_odds_{event_id}_{today}"
+
+    if not force:
+        cached = _cache_read(cache_key, max_age_minutes=POLL_CACHE_TTL_MINUTES)
+        if cached is not None:
+            return cached
+
+    print(f"  [propline] GET /sports/{sport}/events/{event_id}/odds (1 cr)...")
+    raw = _get(
+        f"sports/{sport}/events/{event_id}/odds",
+        params  = {"markets": markets},
+        credits = 1,
+    )
+    if not raw:
+        return None
+
+    _cache_write(cache_key, raw)
+    return raw
+
+
+def fetch_scores(sport: str = SPORT_MLB, days_from: int = 1, force: bool = False) -> list[dict]:
+    """
+    GET /sports/{sport}/scores?days_from={days_from}&apiKey=KEY
+    Returns game scores and completion status — used for sharp review auto-settlement.
+    Cached 30 minutes only (scores change during games).
+    Cost: 1 credit.
+    """
+    today     = datetime.now().strftime("%Y-%m-%d")
+    cache_key = f"scores_{sport}_{days_from}_{today}"
+
+    if not force:
+        cached = _cache_read(cache_key, max_age_minutes=SCORES_CACHE_TTL_MINUTES)
+        if cached is not None:
+            return cached
+
+    print(f"  [propline] GET /sports/{sport}/scores?days_from={days_from} (1 cr)...")
+    raw = _get(
+        f"sports/{sport}/scores",
+        params  = {"days_from": days_from},
+        credits = 1,
+    )
+    if not raw:
+        return []
+
+    scores = raw if isinstance(raw, list) else (raw.get("data") or raw.get("scores") or [])
+    _cache_write(cache_key, scores)
+    print(f"  [propline] ✓ {len(scores)} score records for {sport}")
+    return scores
+
+
+def fetch_event_stats(event_id: str, sport: str = SPORT_MLB, force: bool = False) -> dict | None:
+    """
+    GET /sports/{sport}/events/{event_id}/stats?apiKey=KEY
+    Returns box score stats: pitcher strikeouts, batter hits, total bases, etc.
+    Used by sharp review to get actual results for settlement.
+    Cached permanently once complete (final box scores don't change).
+    Cost: 1 credit per event.
+    """
+    cache_key = f"event_stats_{event_id}"
+
+    if not force:
+        cached = _cache_read(cache_key, max_age_minutes=STATS_CACHE_TTL_MINUTES)
+        if cached is not None:
+            return cached
+
+    print(f"  [propline] GET /sports/{sport}/events/{event_id}/stats (1 cr)...")
+    raw = _get(f"sports/{sport}/events/{event_id}/stats", credits=1)
+    if not raw:
+        return None
+
+    _cache_write(cache_key, raw)
+    return raw
+
+
+def fetch_all_props(
+    sport:   str  = SPORT_MLB,
+    markets: str  = DEFAULT_MARKETS,
+    force:   bool = False,
+) -> list[dict]:
+    """
+    Full two-step flow:
+      1. fetch_events() — get event list (1 cr, cached daily)
+      2. fetch_event_odds() for each event — get bookmaker lines (1 cr each)
+    Normalizes all results into flat prop list matching parlayapi output shape.
+    Total cost: 1 + N events credits.
+    """
+    today     = datetime.now().strftime("%Y-%m-%d")
+    cache_key = f"all_props_{sport}_{today}"
+
+    if not force:
+        cached = _cache_read(cache_key, max_age_minutes=POLL_CACHE_TTL_MINUTES)
+        if cached is not None:
+            return cached
+
+    events = fetch_events(sport, force=force)
+    if not events:
+        print(f"  [propline] No events — cannot fetch props for {sport}")
+        return []
+
+    all_props: list[dict] = []
+    for event in events:
+        event_id     = event.get("id") or event.get("event_id") or ""
+        home_team    = event.get("home_team", "")
+        away_team    = event.get("away_team", "")
+        commence     = event.get("commence_time", "")
+        game_date    = commence[:10] if commence else today
+
+        if not event_id:
+            continue
+
+        odds = fetch_event_odds(event_id, sport=sport, markets=markets, force=force)
+        if not odds:
+            continue
+
+        props = _normalize_event_odds(
+            event_id     = event_id,
+            home_team    = home_team,
+            away_team    = away_team,
+            commence_time = commence,
+            game_date    = game_date,
+            odds_raw     = odds,
+        )
+        all_props.extend(props)
+
+    _cache_write(cache_key, all_props)
+    unique_players = len({p["player"] for p in all_props})
+    unique_books   = len({p["book"]   for p in all_props})
+    print(f"  [propline] ✓ {len(all_props)} prop lines "
+          f"({unique_players} players, {unique_books} books) for {sport}")
+    return all_props
+
+
+# ─── Backward-compatible alias (referenced by other modules) ──
 def fetch_propline_props(
     sport:   str  = SPORT_MLB,
     force:   bool = False,
     ttl_min: int  = POLL_CACHE_TTL_MINUTES,
 ) -> list[dict]:
-    """
-    Fetch all props for a sport. Cached 20 minutes (dynamic polling TTL).
-    Cost: ~1-2 credits per call.
-
-    This is the primary function called by the intraday scanner every 20 min.
-    Returns a flat list of prop entries, each with book coverage including Pinnacle.
-
-    Args:
-        sport   : sport key (SPORT_MLB, SPORT_NBA, etc.)
-        force   : bypass cache and force fresh fetch
-        ttl_min : cache TTL in minutes
-
-    Returns:
-        List of prop dicts in normalized shape (see _normalize_prop)
-    """
-    cache_key = f"props_{sport}"
-
-    if not force:
-        cached = _cache_read(cache_key, max_age_minutes=ttl_min)
-        if cached is not None:
-            return cached
-
-    print(f"  [propline] Fetching props {sport} (~2 cr)...")
-    raw = _get(
-        endpoint="props",
-        params={"apiKey": PROPLINE_API_KEY, "sport": sport},
-        credits=2,
-    )
-
-    if not raw:
-        print(f"  [propline] No data returned for {sport} — returning empty list")
-        return []
-
-    props = _normalize_props(raw)
-    _cache_write(cache_key, props)
-    print(f"  [propline] ✓ {len(props)} props fetched for {sport}")
-    return props
+    """Alias for fetch_all_props() — kept for backward compatibility."""
+    return fetch_all_props(sport=sport, force=force)
 
 
 def fetch_propline_pinnacle(sport: str = SPORT_MLB) -> list[dict]:
     """
-    Extract only Pinnacle lines from the props payload.
-    No additional credit cost — reads from props cache.
-
-    This is the sharp reference source for EV calculation.
-    If Pinnacle is missing for a player, slipiq_odds_supplement.py fires as backup.
+    Extract only Pinnacle lines from the full props payload.
+    No additional credit cost — reads from the fetch_all_props() cache.
+    Sharp reference source for EV calculation.
     """
-    all_props = fetch_propline_props(sport)
+    all_props = fetch_all_props(sport)
     pinnacle  = [p for p in all_props if p.get("book", "").lower() == BOOK_PINNACLE]
     if not pinnacle:
         print(f"  [propline] No Pinnacle lines in {sport} props (off-hours or not posted yet)")
     return pinnacle
 
 
-def check_line_movement(
-    sport:     str   = SPORT_MLB,
-    threshold: float = 0.5,
-) -> dict:
-    """
-    Check if any lines moved significantly since last cache.
-    Compares fresh fetch vs cached data WITHOUT spending extra credits
-    if the cache is still fresh.
-
-    Returns:
-        {
-            "moved"         : bool,
-            "movers"        : list[dict],  # props that moved > threshold
-            "total_checked" : int,
-        }
-    """
-    cache_key = f"props_{sport}"
-    old       = _cache_read(cache_key, max_age_minutes=240) or []
-
-    # Force fresh fetch only if old cache is >20 min stale
-    age = _cache_age_minutes(cache_key)
-    if age is None or age > POLL_CACHE_TTL_MINUTES:
-        fresh = fetch_propline_props(sport, force=True)
-    else:
-        fresh = old
-
-    if not old or not fresh:
-        return {"moved": False, "movers": [], "total_checked": 0}
-
-    # Index old props by (player, market, book)
-    old_index: dict[tuple, float] = {}
-    for p in old:
-        key = (p.get("player", ""), p.get("market", ""), p.get("book", ""))
-        if p.get("line") is not None:
-            old_index[key] = float(p["line"])
-
-    movers = []
-    for p in fresh:
-        key = (p.get("player", ""), p.get("market", ""), p.get("book", ""))
-        old_line = old_index.get(key)
-        new_line = p.get("line")
-        if old_line is not None and new_line is not None:
-            if abs(float(new_line) - old_line) >= threshold:
-                movers.append({
-                    "player":    p.get("player"),
-                    "market":    p.get("market"),
-                    "book":      p.get("book"),
-                    "old_line":  old_line,
-                    "new_line":  float(new_line),
-                    "delta":     round(float(new_line) - old_line, 2),
-                })
-
-    return {
-        "moved":         len(movers) > 0,
-        "movers":        movers,
-        "total_checked": len(fresh),
-    }
-
-
 # ═══════════════════════════════════════════════════════════════
-# SECTION 4 — NORMALIZATION
+# SECTION 5 — NORMALIZATION
 # ═══════════════════════════════════════════════════════════════
 
-def _normalize_props(raw: dict | list) -> list[dict]:
+def _normalize_event_odds(
+    *,
+    event_id:      str,
+    home_team:     str,
+    away_team:     str,
+    commence_time: str,
+    game_date:     str,
+    odds_raw:      dict,
+) -> list[dict]:
     """
-    Normalize Prop-Line API response to flat list of prop dicts.
-    Each dict represents ONE book's line for ONE player/market.
-
-    Output shape matches slipiq_parlayapi.py aggregate_by_player() input.
-    Adapt this function if Prop-Line changes their response structure.
+    Flatten one event's odds response into prop dicts.
+    Handles The Odds API bookmakers/markets/outcomes structure,
+    which Prop-Line mirrors.
     """
-    entries = []
+    entries: list[dict] = []
 
-    # Handle both list and dict-wrapped responses
-    if isinstance(raw, dict):
-        games = raw.get("games") or raw.get("data") or raw.get("props") or []
-    elif isinstance(raw, list):
-        games = raw
-    else:
-        return entries
+    bookmakers = odds_raw.get("bookmakers") or []
+    if not bookmakers and isinstance(odds_raw.get("data"), list):
+        bookmakers = odds_raw["data"]
 
-    for game in games:
-        if not isinstance(game, dict):
-            continue
+    for bm in bookmakers:
+        book       = (bm.get("key") or bm.get("book_key") or "").lower()
+        book_title = bm.get("title") or bm.get("name") or book.title()
 
-        home_team     = game.get("home_team") or game.get("homeTeam") or ""
-        away_team     = game.get("away_team") or game.get("awayTeam") or ""
-        commence_time = game.get("commence_time") or game.get("startTime") or ""
-        game_date     = commence_time[:10] if commence_time else ""
-        game_id       = game.get("game_id") or game.get("id") or ""
+        for market in bm.get("markets") or []:
+            market_key = (market.get("key") or market.get("market_key") or "").lower()
+            outcomes   = market.get("outcomes") or []
 
-        # Props can be nested under "props" or "markets" or "odds"
-        props_list = (
-            game.get("props") or
-            game.get("markets") or
-            game.get("player_props") or
-            []
-        )
-
-        for prop in props_list:
-            if not isinstance(prop, dict):
-                continue
-
-            player = (
-                prop.get("player_name") or
-                prop.get("player") or
-                prop.get("name") or
-                ""
-            ).strip()
-            market = (
-                prop.get("market_key") or
-                prop.get("market") or
-                prop.get("prop_type") or
-                ""
-            ).lower()
-            line = prop.get("line") or prop.get("point") or prop.get("handicap")
-
-            # Books
-            book_lines = prop.get("books") or prop.get("sportsbooks") or [prop]
-            for bl in book_lines:
-                if not isinstance(bl, dict):
+            # Group outcomes by player — each player has over + under outcomes
+            players: dict[str, dict] = {}
+            for outcome in outcomes:
+                player = (
+                    outcome.get("description") or
+                    outcome.get("player_name") or
+                    outcome.get("name") or
+                    ""
+                ).strip()
+                if not player:
                     continue
 
-                book     = (bl.get("book_key") or bl.get("sportsbook") or bl.get("book") or "").lower()
-                over_p   = bl.get("over_price") or bl.get("over") or bl.get("over_odds")
-                under_p  = bl.get("under_price") or bl.get("under") or bl.get("under_odds")
-                book_line = bl.get("line") or bl.get("point") or line
+                label = (outcome.get("name") or "").lower()
+                point = outcome.get("point")
+                price = outcome.get("price")
 
-                if not player or not market or book_line is None:
+                if player not in players:
+                    players[player] = {"line": None, "over_price": None, "under_price": None}
+                if point is not None:
+                    players[player]["line"] = float(point)
+                if label == "over" and price is not None:
+                    players[player]["over_price"] = int(price)
+                elif label == "under" and price is not None:
+                    players[player]["under_price"] = int(price)
+
+            for player, data in players.items():
+                if data["line"] is None:
                     continue
-
                 entries.append({
                     "player":        player,
-                    "market":        market,
-                    "line":          float(book_line),
+                    "market":        market_key,
+                    "line":          data["line"],
                     "book":          book,
-                    "book_title":    bl.get("book_title") or bl.get("name") or book.title(),
-                    "over_price":    int(over_p)  if over_p  is not None else None,
-                    "under_price":   int(under_p) if under_p is not None else None,
+                    "book_title":    book_title,
+                    "over_price":    data["over_price"],
+                    "under_price":   data["under_price"],
                     "home_team":     home_team,
                     "away_team":     away_team,
                     "game_date":     game_date,
                     "commence_time": commence_time,
-                    "game_id":       str(game_id),
+                    "game_id":       event_id,
                     "_source":       "propline",
                 })
 
@@ -403,11 +491,11 @@ def _normalize_props(raw: dict | list) -> list[dict]:
 
 
 # ═══════════════════════════════════════════════════════════════
-# SECTION 5 — AGGREGATION (matches parlayapi output shape)
+# SECTION 6 — AGGREGATION (matches parlayapi output shape)
 # ═══════════════════════════════════════════════════════════════
 
 def aggregate_propline_by_player(
-    props: list[dict],
+    props:           list[dict],
     preferred_books: tuple = PREFERRED_BOOKS,
     sharp_books:     tuple = SHARP_BOOKS,
 ) -> dict[tuple, dict]:
@@ -415,22 +503,6 @@ def aggregate_propline_by_player(
     Aggregate per-book lines into a per-player/market summary.
     Output shape is identical to slipiq_parlayapi.aggregate_by_player()
     so downstream modules (ev_engine, confidence_agent) are source-agnostic.
-
-    Returns:
-        dict keyed by (player_name_lower, market) →
-        {
-            "player"          : str,
-            "market"          : str,
-            "line_consensus"  : float,
-            "sharp_line"      : float | None,  # Pinnacle line
-            "pinnacle"        : {"over": int, "under": int} | None,
-            "ev_over"         : float | None,  # computed vs Pinnacle no-vig
-            "ev_under"        : float | None,
-            "best_over"       : {"book": str, "price": int, "line": float} | None,
-            "best_under"      : {"book": str, "price": int, "line": float} | None,
-            "book_count"      : int,
-            "_entries"        : list[dict],  # raw entries for this player/market
-        }
     """
     from slipiq_ev_engine import no_vig_prob
 
@@ -443,9 +515,8 @@ def aggregate_propline_by_player(
     for (player_key, market), entries in grouped.items():
         player_display = entries[0]["player"]
 
-        # Pinnacle data
-        pin_entry = next((e for e in entries if e["book"] == BOOK_PINNACLE), None)
-        pinnacle  = None
+        pin_entry  = next((e for e in entries if e["book"] == BOOK_PINNACLE), None)
+        pinnacle   = None
         sharp_line = None
         ev_over    = None
         ev_under   = None
@@ -458,26 +529,21 @@ def aggregate_propline_by_player(
                     "under": pin_entry["under_price"],
                 }
                 nv = no_vig_prob(pinnacle["over"], pinnacle["under"])
-
-                # Compute EV vs each preferred book's best line
                 for e in entries:
                     if e["book"] in preferred_books:
+                        from slipiq_ev_engine import leg_ev
                         if e.get("over_price"):
-                            from slipiq_ev_engine import leg_ev
                             ev_o = leg_ev(nv["true_over"], e["over_price"])
                             if ev_over is None or ev_o > ev_over:
                                 ev_over = round(ev_o, 6)
                         if e.get("under_price"):
-                            from slipiq_ev_engine import leg_ev
                             ev_u = leg_ev(nv["true_under"], e["under_price"])
                             if ev_under is None or ev_u > ev_under:
                                 ev_under = round(ev_u, 6)
 
-        # Consensus line
-        lines = [e["line"] for e in entries if e.get("line") is not None]
+        lines          = [e["line"] for e in entries if e.get("line") is not None]
         line_consensus = round(sum(lines) / len(lines), 1) if lines else None
 
-        # Best over / under across preferred books
         best_over  = None
         best_under = None
         for e in entries:
@@ -512,13 +578,13 @@ def aggregate_propline_by_player(
 def get_propline_for_players(
     player_names: list[str],
     sport:        str = SPORT_MLB,
-    market:       str = "player_pitcher_strikeouts",
+    market:       str = "pitcher_strikeouts",
 ) -> dict[tuple, dict]:
     """
     Convenience: fetch and aggregate props for a specific list of players.
     Used by the confidence agent to enrich specific pick cards.
     """
-    all_props = fetch_propline_props(sport)
+    all_props = fetch_all_props(sport)
     filtered  = [
         p for p in all_props
         if p["player"].lower() in {n.lower() for n in player_names}
@@ -527,17 +593,64 @@ def get_propline_for_players(
     return aggregate_propline_by_player(filtered)
 
 
+def check_line_movement(
+    sport:     str   = SPORT_MLB,
+    threshold: float = 0.5,
+) -> dict:
+    """
+    Compare fresh props vs cached props to detect significant line movement.
+    Forces a fresh fetch only when the cache is >20 minutes stale.
+    """
+    cache_key = f"all_props_{sport}_{datetime.now().strftime('%Y-%m-%d')}"
+    old       = _cache_read(cache_key, max_age_minutes=240) or []
+
+    age = _cache_age_minutes(cache_key)
+    if age is None or age > POLL_CACHE_TTL_MINUTES:
+        fresh = fetch_all_props(sport, force=True)
+    else:
+        fresh = old
+
+    if not old or not fresh:
+        return {"moved": False, "movers": [], "total_checked": 0}
+
+    old_index: dict[tuple, float] = {}
+    for p in old:
+        key = (p.get("player", ""), p.get("market", ""), p.get("book", ""))
+        if p.get("line") is not None:
+            old_index[key] = float(p["line"])
+
+    movers = []
+    for p in fresh:
+        key      = (p.get("player", ""), p.get("market", ""), p.get("book", ""))
+        old_line = old_index.get(key)
+        new_line = p.get("line")
+        if old_line is not None and new_line is not None:
+            if abs(float(new_line) - old_line) >= threshold:
+                movers.append({
+                    "player":   p.get("player"),
+                    "market":   p.get("market"),
+                    "book":     p.get("book"),
+                    "old_line": old_line,
+                    "new_line": float(new_line),
+                    "delta":    round(float(new_line) - old_line, 2),
+                })
+
+    return {
+        "moved":         len(movers) > 0,
+        "movers":        movers,
+        "total_checked": len(fresh),
+    }
+
+
 # ═══════════════════════════════════════════════════════════════
-# SECTION 6 — KELLY STAKE CONVENIENCE
-# (mirrors slipiq_parlayapi.kelly_stake signature)
+# SECTION 7 — KELLY STAKE (mirrors slipiq_parlayapi signature)
 # ═══════════════════════════════════════════════════════════════
 
 def kelly_stake(ev: float, prob: float, bankroll: float, fraction: float = 0.25) -> float:
     """Thin wrapper — delegates to ev_engine."""
-    from slipiq_ev_engine import american_to_decimal, kelly_stake as _ks
+    from slipiq_ev_engine import kelly_stake as _ks
     if ev <= 0 or prob <= 0:
         return 0.0
-    # Reconstruct decimal odds from ev and prob: ev = prob*odds-1 → odds=(1+ev)/prob
     decimal = (1.0 + ev) / prob
     return _ks(ev, prob, decimal, bankroll, fraction)
 
@@ -551,48 +664,32 @@ if __name__ == "__main__":
     print("SlipIQ — Prop-Line API Module Self-Test")
     print("=" * 60)
 
-    # Credit tracker test
     usage = get_daily_credit_usage()
-    print(f"\n[1] Credit usage today: {usage['used']}/{usage['limit']} ({usage['remaining']} remaining)")
-
-    # Normalization test with mock data
-    mock_raw = {
-        "games": [{
-            "home_team":     "Chicago Cubs",
-            "away_team":     "St. Louis Cardinals",
-            "commence_time": "2026-05-28T18:10:00Z",
-            "game_id":       "test_001",
-            "props": [{
-                "player_name": "Jameson Taillon",
-                "market_key":  "player_pitcher_strikeouts",
-                "line":        5.5,
-                "books": [
-                    {"book_key": "pinnacle",   "over_price": -115, "under_price": -105},
-                    {"book_key": "draftkings", "over_price": -110, "under_price": -110},
-                ]
-            }]
-        }]
-    }
-    props    = _normalize_props(mock_raw)
-    print(f"\n[2] Normalization test: {len(props)} entries extracted")
-    for p in props:
-        print(f"    {p['player']} | {p['market']} | line={p['line']} | book={p['book']} | over={p['over_price']}")
-
-    # Aggregation test
-    agg = aggregate_propline_by_player(props)
-    for (pkey, mkt), data in agg.items():
-        print(f"\n[3] Aggregated: {data['player']} | line={data['line_consensus']} | books={data['book_count']}")
-        print(f"    ev_over={data['ev_over']}  ev_under={data['ev_under']}")
-        print(f"    pinnacle={data['pinnacle']}  sharp_line={data['sharp_line']}")
+    print(f"\n[1] Credits today: {usage['used']}/{usage['limit']} ({usage['remaining']} remaining)")
 
     if not PROPLINE_API_KEY:
         print("\n⚠️  PROPLINE_API_KEY not set — live API tests skipped.")
-        print("    Set PROPLINE_API_KEY in .env and re-run to test live fetch.")
+        print("    Set PROPLINE_API_KEY in .env and re-run.")
     else:
-        print(f"\n[4] Live API test — fetching {SPORT_MLB} props...")
-        props_live = fetch_propline_props(SPORT_MLB)
-        print(f"    {len(props_live)} props returned")
+        print(f"\n[2] Fetching events for {SPORT_MLB}...")
+        events = fetch_events(SPORT_MLB, force=True)
+        print(f"    {len(events)} events returned")
+
+        if events:
+            eid = events[0].get("id") or events[0].get("event_id", "")
+            print(f"\n[3] Fetching odds for event {eid}...")
+            odds = fetch_event_odds(eid, SPORT_MLB, force=True)
+            print(f"    {'odds returned' if odds else 'no odds'}")
+
+        print(f"\n[4] fetch_all_props({SPORT_MLB})...")
+        props = fetch_all_props(SPORT_MLB, force=True)
+        print(f"    {len(props)} prop lines returned")
+
+        print(f"\n[5] fetch_scores({SPORT_MLB})...")
+        scores = fetch_scores(SPORT_MLB)
+        print(f"    {len(scores)} score records")
+
         usage_after = get_daily_credit_usage()
-        print(f"    Credits used: {usage_after['used']}")
+        print(f"\n[6] Credits used this test: {usage_after['used'] - usage['used']}")
 
     print("\n✓ Propline module ready.")

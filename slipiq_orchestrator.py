@@ -258,6 +258,17 @@ def run_main(state: dict, force_discord: bool = True) -> dict:
         except Exception as e:
             print(f"  [slate] Game fetch failed: {e} — using fallback")
 
+        # Load today's game schedule from PropLine (free endpoint)
+        try:
+            from slipiq_propline import fetch_events
+            todays_events = fetch_events(sport="baseball_mlb")
+            if todays_events:
+                from slipiq_cache import cache_set
+                cache_set("mlb_todays_games", todays_events)
+                print(f"  [slate] Loaded {len(todays_events)} MLB games from PropLine")
+        except Exception as e:
+            print(f"  [slate] PropLine events failed: {e}")
+
         # Alert Discord that a new slate window was detected
         try:
             from slipiq_discord import post_message
