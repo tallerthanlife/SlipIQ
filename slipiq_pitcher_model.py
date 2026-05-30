@@ -269,6 +269,21 @@ def score_confidence(
 
 
 # ═════════════════════════════════════════
+# PITCHER GAME LOGS (pybaseball)
+# ═════════════════════════════════════════
+
+def get_pitcher_game_logs(pitcher_name: str) -> pd.DataFrame | None:
+    """Per-start K totals (most recent first) via Statcast game logs."""
+    form = get_pitcher_recent_form(pitcher_name, n_starts=10)
+    if not form:
+        return None
+    k_list = form.get("k_per_start") or []
+    if not k_list:
+        return None
+    return pd.DataFrame({"SO": k_list})
+
+
+# ═════════════════════════════════════════
 # REAL CONFIDENCE MODEL
 # ═════════════════════════════════════════
 
@@ -454,14 +469,32 @@ def build_pick_card(
     edge      = score_edge(proj["projection"], line, ev_over, ev_under)
     direction = edge.get("direction", "")
 
-    _pitcher_stats = {
+    pitcher_stats = {
         "last_5_ks":  (recent_form.get("k_per_start") or [])[-5:],
         "last_10_ks": (recent_form.get("k_per_start") or [])[-10:],
         "k_per_9":    season_stats.get("k_per_9"),
         "opp_k_rate": proj.get("matchup_k_rate") or prop_data.get("matchup_k_rate"),
     }
+    try:
+        from pybaseball import pitching_stats_bref
+        logs = get_pitcher_game_logs(player_name)
+        if logs is not None and not logs.empty:
+            # Get K column — may be named SO, K, or strikeouts
+            k_col = next(
+                (c for c in ["SO", "K", "strikeouts", "SO9"]
+                 if c in logs.columns),
+                None
+            )
+            if k_col:
+                ks = logs[k_col].tolist()
+                pitcher_stats["last_5_ks"] = ks[:5]
+                pitcher_stats["last_10_ks"] = ks[:10]
+                print(f"  [form] {player_name} last 5 Ks: {ks[:5]}")
+    except Exception as e:
+        print(f"  [form] Could not get game logs for {player_name}: {e}")
+
     confidence, grade, conf_reasons = calculate_real_confidence(
-        _pitcher_stats, proj["projection"], line, direction
+        pitcher_stats, proj["projection"], line, direction
     )
     books_display = build_books_display(entries, direction) if entries else {}
     books_row     = format_books_row(books_display)

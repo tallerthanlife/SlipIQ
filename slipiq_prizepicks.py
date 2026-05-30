@@ -13,6 +13,7 @@
 # ═══════════════════════════════════════════════════════════════
 
 import random
+import time
 
 import requests
 from datetime import date
@@ -37,23 +38,22 @@ def fetch_prizepicks_lines(sport: str = "baseball_mlb") -> list[dict]:
         "per_page":    250,
         "single_stat": "true",
     }
-    USER_AGENTS = [
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    ]
-
-    HEADERS = {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept": "application/json",
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+        "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
         "Referer": "https://app.prizepicks.com/",
         "Origin": "https://app.prizepicks.com",
-        "X-Device-ID": "slipiq-bot-v1",
-    }
+        "Connection": "keep-alive",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site",
+    })
 
-    session = requests.Session()
-    session.headers.update(HEADERS)
+    # Small delay to avoid rate limiting
+    time.sleep(random.uniform(1.0, 2.5))
 
     try:
         r = session.get(PP_URL, params=params, timeout=20)
