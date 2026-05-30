@@ -374,6 +374,7 @@ def supplement_pitcher_strikeout_props(props: list[dict]) -> list[dict]:
     Only fetches for players actually missing Pinnacle.
     Never duplicates (player, book) pairs.
     """
+    return props  # PropLine EV used instead — disabled
     # Skip supplement entirely — ParlayAPI carries the lines
     # PropLine EV endpoint used separately via slipiq_propline_ev.py
     return props

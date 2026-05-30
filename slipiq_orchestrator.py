@@ -238,7 +238,7 @@ def run_main(state: dict, force_discord: bool = True) -> dict:
         # ── [2] Curation → Discord ────────────────────────────
         from slipiq_curate import run_curation
         print("\n  [2] Running curation pipeline...")
-        curation_result = run_curation(post_discord=force_discord)
+        curation_result = run_curation(post_to_discord=force_discord)
 
         picks_posted = curation_result.get("post_count", 0)
         print(f"\n  ✅ Main run complete — {picks_posted} picks posted")
@@ -452,20 +452,6 @@ def run_nightly_scrape(state: dict) -> dict:
     print("\n" + "═" * 60)
     print("ORCHESTRATOR — NIGHTLY SCRAPE (10:00pm AZ)")
     print("═" * 60)
-
-    try:
-        from slipiq_betonline import scrape_betonline_mlb_props
-        bo_lines = scrape_betonline_mlb_props()
-        print(f"  [nightly] BetOnline: {len(bo_lines)} lines")
-    except Exception as e:
-        print(f"  [nightly] BetOnline error: {e}")
-
-    try:
-        from slipiq_bookmaker import scrape_bookmaker_mlb
-        bm_lines = scrape_bookmaker_mlb()
-        print(f"  [nightly] Bookmaker: {len(bm_lines)} lines")
-    except Exception as e:
-        print(f"  [nightly] Bookmaker error: {e}")
 
     state["nightly_scrape_done"] = True
     return state

@@ -369,6 +369,13 @@ def fetch_all_props(
             return cached
 
     events = fetch_events(sport, force=force)
+    from datetime import date
+    today = date.today().isoformat()
+    events = [e for e in events
+              if (e.get("commence_time") or "")[:10] == today]
+    if not events:
+        events = fetch_events(sport)[:10]
+    print(f"  [propline] {len(events)} today's events")
     if not events:
         print(f"  [propline] No events — cannot fetch props for {sport}")
         return []
