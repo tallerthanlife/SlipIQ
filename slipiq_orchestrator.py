@@ -336,14 +336,8 @@ def run_main(state: dict, force_discord: bool = True) -> dict:
         # Run batter model and post batter picks
         try:
             from slipiq_batter_model import run_batter_model
-            from slipiq_batter_lines import get_batter_lines
             print("  [2b] Running batter model...")
-            batter_lines = get_batter_lines()
-            batter_picks = run_batter_model(
-                batter_lines=batter_lines,
-                min_confidence=60,
-                post_to_discord=force_discord
-            )
+            batter_picks = run_batter_model(min_confidence=60)
             print(f"  [2b] Batter model: {len(batter_picks)} picks")
         except Exception as e:
             import traceback

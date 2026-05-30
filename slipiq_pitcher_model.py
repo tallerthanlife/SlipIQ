@@ -299,6 +299,25 @@ def build_pick_card(
     proj = project_pitcher_strikeouts(
         player_name, season_stats, recent_form, opponent_k_rate, park_factor
     )
+
+    # Opponent batter K-rate adjustment
+    try:
+        from slipiq_mlb_data import get_team_k_rate
+        opp_team = prop_data.get("away_team") or prop_data.get("home_team")
+        opp_k_rate = get_team_k_rate(opp_team)
+        if opp_k_rate:
+            # Teams that K more → boost projection
+            # Teams that K less → reduce projection
+            league_avg_k = 0.225
+            k_adjustment = (opp_k_rate - league_avg_k) / league_avg_k
+            proj["projection"] = round(
+                proj["projection"] * (1 + k_adjustment * 0.3), 2
+            )
+            proj["matchup_k_rate"] = opp_k_rate
+            proj["matchup_boost"] = round(k_adjustment * 0.3 * 100, 1)
+    except Exception:
+        pass
+
     edge       = score_edge(proj["projection"], line, ev_over, ev_under)
     confidence = score_confidence(proj, edge, book_count, lines_book_count)
 
@@ -409,6 +428,167 @@ def build_pick_card(
 
 
 # ═════════════════════════════════════════
+# EXTRA MARKET PROJECTIONS (outs / hits allowed / earned runs)
+# ═════════════════════════════════════════
+
+LEAGUE_AVG_IP   = 5.5   # expected innings per start
+LEAGUE_AVG_WHIP = 1.30  # league average WHIP
+LEAGUE_AVG_ERA  = 4.20  # league average ERA
+
+EXTRA_MARKET_MIN_LINE = {
+    "pitcher_outs":         10.0,
+    "pitcher_hits_allowed":  3.0,
+    "pitcher_earned_runs":   0.5,
+}
+
+
+def project_extra_pitcher_market(
+    market_key:   str,
+    season_stats: dict,
+    recent_form:  dict,
+    park_factor:  float = 1.0,
+) -> float:
+    """
+    Project pitcher_outs, pitcher_hits_allowed, or pitcher_earned_runs.
+    Uses season stats with recent form override where available.
+    """
+    avg_ip           = season_stats.get("avg_ip_per_start", LEAGUE_AVG_IP)
+    expected_innings = max(avg_ip, 4.0)
+
+    if market_key == "pitcher_outs":
+        projection = expected_innings * 3
+
+    elif market_key == "pitcher_hits_allowed":
+        whip = (
+            recent_form.get("avg_whip") or
+            season_stats.get("whip") or
+            LEAGUE_AVG_WHIP
+        )
+        projection = whip * expected_innings
+
+    elif market_key == "pitcher_earned_runs":
+        era = (
+            recent_form.get("avg_era") or
+            season_stats.get("era") or
+            LEAGUE_AVG_ERA
+        )
+        projection = era / 9 * expected_innings
+
+    else:
+        return 0.0
+
+    return round(projection * park_factor, 2)
+
+
+def build_extra_market_card(
+    player_name:  str,
+    market_key:   str,
+    prop_data:    dict,
+    season_stats: dict,
+    recent_form:  dict,
+    park_factor:  float = 1.0,
+) -> dict | None:
+    """
+    Build a pick card for pitcher_outs, pitcher_hits_allowed, or pitcher_earned_runs.
+    Reuses score_edge / score_confidence / books helpers unchanged from strikeout flow.
+    """
+    line     = prop_data.get("sharp_line") or prop_data.get("line_consensus")
+    min_line = EXTRA_MARKET_MIN_LINE.get(market_key, 0.5)
+    if not line or line < min_line:
+        return None
+
+    book_count       = prop_data.get("book_count", 0)
+    lines_book_count = prop_data.get("lines_book_count", book_count)
+    ev_over          = prop_data.get("ev_over")
+    ev_under         = prop_data.get("ev_under")
+    pinnacle         = prop_data.get("pinnacle")
+    best_over        = prop_data.get("best_over")
+    best_under       = prop_data.get("best_under")
+    entries          = prop_data.get("_entries") or []
+
+    projection = project_extra_pitcher_market(market_key, season_stats, recent_form, park_factor)
+    if projection <= 0:
+        return None
+
+    edge  = score_edge(projection, line, ev_over, ev_under)
+    trend = recent_form.get("trend", "flat")
+    proj_stub = {
+        "confidence_factors": {
+            "sample_size": 60, "consistency": 55, "matchup": 50, "stuff": 60,
+        },
+        "trend": trend,
+    }
+    confidence    = score_confidence(proj_stub, edge, book_count, lines_book_count)
+    direction     = edge.get("direction", "")
+    books_display = build_books_display(entries, direction) if entries else {}
+    books_row     = format_books_row(books_display)
+    if not books_row and entries:
+        books_row = format_fallback_books_row(entries, direction)
+    if not books_row:
+        books_row = "No lines on target books yet"
+
+    best_book = None
+    pick_side = best_over if direction == "over" else best_under
+    if not pick_side and entries:
+        for ent in entries:
+            if ent.get("book", "").lower() in SHARP_BOOKS:
+                continue
+            if direction == "over" and ent.get("over_price") is not None:
+                pick_side = ent
+                break
+            if direction == "under" and ent.get("under_price") is not None:
+                pick_side = ent
+                break
+    if pick_side:
+        price = (
+            pick_side.get("over_price") if direction == "over"
+            else pick_side.get("under_price")
+        )
+        if price is not None and price >= MAX_JUICE:
+            best_book = {
+                "book":  pick_side.get("book_title") or pick_side.get("book"),
+                "price": price,
+                "side":  direction,
+            }
+
+    flags = []
+    if book_count < MIN_BOOKS_TRUST:
+        flags.append(f"⚠️  thin market: only {book_count} action book(s) posting")
+    if not pinnacle:
+        flags.append("⚠️  sharp anchor missing — EV unconfirmed")
+
+    return {
+        "player":           player_name,
+        "game_date":        prop_data.get("game_date"),
+        "home_team":        prop_data.get("home_team"),
+        "away_team":        prop_data.get("away_team"),
+        "market":           market_key,
+        "line":             line,
+        "projection":       projection,
+        "direction":        direction,
+        "diff":             edge.get("diff"),
+        "grade":            edge.get("grade"),
+        "signal":           edge.get("signal"),
+        "confidence":       confidence,
+        "ev_value":         edge.get("ev_value"),
+        "ev":               edge.get("ev_value"),
+        "ev_confirmed":     edge.get("ev_confirmed"),
+        "best_book":        best_book,
+        "books_display":    books_display,
+        "books_row":        books_row,
+        "book_count":       book_count,
+        "lines_book_count": lines_book_count,
+        "trend":            trend,
+        "flags":            flags,
+        "pinnacle_over":    pinnacle.get("over_price")  if pinnacle else None,
+        "pinnacle_under":   pinnacle.get("under_price") if pinnacle else None,
+        "pinnacle_line":    pinnacle.get("line")        if pinnacle else None,
+        "no_pinnacle":      pinnacle is None or not pinnacle.get("over_price"),
+        "_internal": {"market_projection": market_key},
+    }
+
+
+# ═════════════════════════════════════════
 # MAIN RUNNER
 # ═════════════════════════════════════════
 
@@ -486,6 +666,34 @@ def run_pitcher_model(sport_key: str = SPORT_MLB) -> list[dict]:
     ))
 
     print(f"    {len(pick_cards)} picks after dedup + filters")
+
+    # Extra markets — pitcher_outs, pitcher_hits_allowed, pitcher_earned_runs
+    extra_cards: list[dict] = []
+    for extra_mkt in ("pitcher_outs", "pitcher_hits_allowed", "pitcher_earned_runs"):
+        extra_raw = all_props.get(extra_mkt) or []
+        if not extra_raw:
+            continue
+        extra_agg = aggregate_by_player(extra_raw)
+        extra_seen: dict[str, dict] = {}
+        for (player, _mkt), prop_data in extra_agg.items():
+            s_stats = season_lookup.get(player.lower(), {})
+            r_form  = get_pitcher_recent_form(player)
+            card = build_extra_market_card(
+                player_name  = player,
+                market_key   = extra_mkt,
+                prop_data    = prop_data,
+                season_stats = s_stats,
+                recent_form  = r_form,
+            )
+            if card:
+                if player not in extra_seen or card["confidence"] > extra_seen[player]["confidence"]:
+                    extra_seen[player] = card
+        extra_cards.extend(extra_seen.values())
+
+    if extra_cards:
+        print(f"    {len(extra_cards)} extra market cards (outs/hits/ER)")
+    pick_cards.extend(extra_cards)
+
     return pick_cards
 
 
