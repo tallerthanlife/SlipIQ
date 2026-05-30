@@ -431,9 +431,12 @@ def _normalize_event_odds(
     """
     entries: list[dict] = []
 
-    bookmakers = odds_raw.get("bookmakers") or []
-    if not bookmakers and isinstance(odds_raw.get("data"), list):
-        bookmakers = odds_raw["data"]
+    bookmakers = (
+        odds_raw.get("bookmakers") or
+        odds_raw.get("_entries") or
+        odds_raw.get("data", {}).get("bookmakers") or
+        []
+    )
 
     books_found = [b.get("key") or b.get("name") for b in bookmakers]
     print(f"  [propline] Books in response: {books_found}")
@@ -496,6 +499,7 @@ def _normalize_event_odds(
                     "commence_time": commence_time,
                     "game_id":       event_id,
                     "_source":       "propline",
+                    "bookmakers":    bookmakers,
                 })
 
     return entries

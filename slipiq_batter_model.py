@@ -1,4 +1,5 @@
 # slipiq_batter_model.py
+# run_batter_model(sport_key=SPORT_MLB, min_confidence=55, markets=None) -> list[dict]
 # ═══════════════════════════════════════════════════════════════
 # SlipIQ Batter Model — Projection + EV scoring for batter props
 #
@@ -529,16 +530,16 @@ def run_batter_model(
             season_stats = {}
 
         try:
-            recent_form = get_pitcher_recent_form(player) or {}
+            batter_form = get_pitcher_recent_form(player) or {}
         except Exception:
-            recent_form = {}
+            batter_form = {}
 
         card = build_batter_pick_card(
             player_name  = player,
             market_key   = market,
             prop_data    = prop_data,
             season_stats = season_stats,
-            recent_form  = recent_form,
+            recent_form  = batter_form,
         )
 
         if card is None:

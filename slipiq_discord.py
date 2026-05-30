@@ -417,6 +417,24 @@ def build_sharp_review_embed(player: str, pick_direction: str, line: float,
 # HIGH LEVEL POSTING FUNCTIONS
 # ═════════════════════════════════════════
 
+def post_picks_to_discord(picks: list, channel_id: str) -> int:
+    """Post each pick as its own embed, one per second to respect Discord rate limits."""
+    if not picks:
+        return 0
+    posted = 0
+    for i, pick in enumerate(picks):
+        try:
+            embed = build_pick_embed(pick, rank=i + 1, total=len(picks))
+            result = post_message(channel_id, embed=embed)
+            if result:
+                posted += 1
+                print(f"  [discord] Posted {pick.get('player')} ({i + 1}/{len(picks)})")
+            time.sleep(1.0)  # Discord rate limit — 1 second between posts
+        except Exception as e:
+            print(f"  [discord] Failed {pick.get('player')}: {e}")
+    return posted
+
+
 def post_morning_brief(slate: dict) -> bool:
     """
     Post morning brief + best pick to #daily-picks.
@@ -435,16 +453,12 @@ def post_morning_brief(slate: dict) -> bool:
     brief_embed = build_morning_brief_embed(slate)
     post_message(DISCORD_DAILY_PICKS_CHANNEL, embed=brief_embed)
 
-    # Post each pick as its own message
+    # Post each pick individually
     picks = slate.get("post_list") or []
     if not picks and slate.get("best_pick"):
         picks = [slate["best_pick"]]
 
-    for i, pick in enumerate(picks):
-        embed = build_pick_embed(pick, rank=i + 1, total=len(picks))
-        post_message(DISCORD_DAILY_PICKS_CHANNEL, embed=embed)
-        time.sleep(0.5)  # avoid rate limiting
-
+    post_picks_to_discord(picks, DISCORD_DAILY_PICKS_CHANNEL)
     return True
 
 
