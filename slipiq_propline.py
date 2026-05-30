@@ -486,20 +486,21 @@ def _normalize_event_odds(
                 if data["line"] is None:
                     continue
                 entries.append({
-                    "player":        player,
-                    "market":        market_key,
-                    "line":          data["line"],
-                    "book":          book,
-                    "book_title":    book_title,
-                    "over_price":    data["over_price"],
-                    "under_price":   data["under_price"],
-                    "home_team":     home_team,
-                    "away_team":     away_team,
-                    "game_date":     game_date,
-                    "commence_time": commence_time,
-                    "game_id":       event_id,
-                    "_source":       "propline",
-                    "bookmakers":    bookmakers,
+                    "player":           player,
+                    "market":           market_key,
+                    "line":             data["line"],
+                    "book":             book,
+                    "book_title":       book_title,
+                    "over_price":       data["over_price"],
+                    "under_price":      data["under_price"],
+                    "home_team":        home_team,
+                    "away_team":        away_team,
+                    "game_date":        game_date,
+                    "commence_time":    commence_time,
+                    "game_id":          event_id,
+                    "_source":          "propline",
+                    "bookmakers":       bookmakers,
+                    "_raw_event_odds":  odds_raw,
                 })
 
     return entries

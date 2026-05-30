@@ -498,6 +498,8 @@ def project_extra_pitcher_market(
     season_stats: dict,
     recent_form:  dict,
     park_factor:  float = 1.0,
+    player:       str   = "",
+    line:         float = 0,
 ) -> float:
     """
     Project pitcher_outs, pitcher_hits_allowed, or pitcher_earned_runs.
@@ -529,10 +531,17 @@ def project_extra_pitcher_market(
         return 0.0
 
     result = round(projection * park_factor, 2)
-    print(f"  [extra_market] {market_key}: "
-          f"ip_per_start={expected_innings} "
-          f"projection={result}")
+    print(f"  [extra_market] {player} {market_key}: "
+          f"ip_per_start={expected_innings:.1f} "
+          f"projection={result:.2f} line={line}")
     return result
+
+
+ENABLED_EXTRA_MARKETS = {
+    "pitcher_earned_runs",  # ERA-based, useful
+    # "pitcher_outs",         # disabled — confusing to users
+    # "pitcher_hits_allowed", # disabled — not actionable on PrizePicks
+}
 
 
 def build_extra_market_card(
@@ -547,6 +556,9 @@ def build_extra_market_card(
     Build a pick card for pitcher_outs, pitcher_hits_allowed, or pitcher_earned_runs.
     Reuses score_edge / score_confidence / books helpers unchanged from strikeout flow.
     """
+    if market_key not in ENABLED_EXTRA_MARKETS:
+        return None
+
     line     = prop_data.get("sharp_line") or prop_data.get("line_consensus")
     min_line = EXTRA_MARKET_MIN_LINE.get(market_key, 0.5)
     if not line or line < min_line:
@@ -561,7 +573,10 @@ def build_extra_market_card(
     best_under       = prop_data.get("best_under")
     entries          = prop_data.get("_entries") or []
 
-    projection = project_extra_pitcher_market(market_key, season_stats, recent_form, park_factor)
+    projection = project_extra_pitcher_market(
+        market_key, season_stats, recent_form, park_factor,
+        player=player_name, line=line or 0,
+    )
     if projection <= 0:
         return None
 

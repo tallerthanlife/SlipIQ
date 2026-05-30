@@ -75,6 +75,31 @@ def post_message(channel_id: str, content: str = None, embed: dict = None) -> bo
         return False
 
 
+def send_discord_embed(channel_id: str, embed: dict, new_session: bool = False) -> bool:
+    """
+    Post a single embed to a Discord channel using a direct requests.post() call.
+    Never reuses a persistent session object — each call opens its own connection.
+    `new_session` is accepted for call-site clarity but has no effect: the
+    implementation always issues a fresh HTTP request.
+    Returns True on HTTP 200.
+    """
+    if not DISCORD_BOT_TOKEN:
+        print("  [discord] ERROR: DISCORD_BOT_TOKEN not set in .env")
+        return False
+    if not channel_id:
+        print("  [discord] ERROR: channel_id is None — check .env channel IDs")
+        return False
+
+    url     = f"{DISCORD_API}/channels/{channel_id}/messages"
+    payload = {"embeds": [embed]}
+    r = requests.post(url, headers=HEADERS, json=payload, timeout=10)
+
+    if r.status_code == 200:
+        return True
+    print(f"  [discord] FAIL {r.status_code}: {r.text[:200]}")
+    return False
+
+
 # ═════════════════════════════════════════
 # EMBED BUILDERS
 # ═════════════════════════════════════════
@@ -447,20 +472,25 @@ def build_sharp_review_embed(player: str, pick_direction: str, line: float,
 # ═════════════════════════════════════════
 
 def post_picks_to_discord(picks: list, channel_id: str) -> int:
-    """Post each pick as its own embed, one per second to respect Discord rate limits."""
+    """Post each pick as its own embed, 1.5 s apart to respect Discord rate limits."""
     if not picks:
         return 0
     posted = 0
     for i, pick in enumerate(picks):
         try:
             embed = build_pick_embed(pick, rank=i + 1, total=len(picks))
-            result = post_message(channel_id, embed=embed)
-            if result:
+            # new_session=True forces a fresh HTTP connection per card
+            success = send_discord_embed(channel_id, embed, new_session=True)
+            if success:
                 posted += 1
-                print(f"  [discord] Posted {pick.get('player')} ({i + 1}/{len(picks)})")
-            time.sleep(1.0)  # Discord rate limit — 1 second between posts
+                print(f"  [discord] Posted {pick.get('player')} ({posted}/{len(picks)})")
+            else:
+                print(f"  [discord] FAILED {pick.get('player')}")
+            time.sleep(1.5)  # Discord rate limit
         except Exception as e:
-            print(f"  [discord] Failed {pick.get('player')}: {e}")
+            import traceback
+            print(f"  [discord] ERROR {pick.get('player')}: {e}")
+            print(traceback.format_exc())
     return posted
 
 

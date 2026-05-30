@@ -14,4 +14,3 @@ schedule
 tzdata
 nba_api
 scipy
-playwright

@@ -243,7 +243,17 @@ def gate_pick(card: dict) -> dict:
 
     BREAK_EVEN_PROB = 0.542  # PrizePicks 2-leg break-even
 
-    bookmakers = card.get("bookmakers", []) or card.get("_entries", [])
+    bookmakers = (
+        card.get("bookmakers") or
+        card.get("_entries") or
+        card.get("_raw_event_odds", {}).get("bookmakers") or
+        []
+    )
+    if bookmakers:
+        books = [b.get("key") or b.get("name") for b in bookmakers]
+        print(f"  [ev] {card.get('player')} books available: {books}")
+    else:
+        print(f"  [ev] {card.get('player')} NO bookmakers on card")
     sharp_line = get_sharpest_line(bookmakers, card.get("market", "pitcher_strikeouts"))
 
     if sharp_line and sharp_line.get("over_odds") and sharp_line.get("under_odds"):

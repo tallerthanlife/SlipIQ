@@ -834,6 +834,36 @@ def run_scheduler() -> None:
     if not NBA_SEASON_ACTIVE:
         print("  ⚠️  NBA jobs disabled — NBA_SEASON_ACTIVE=false in .env\n")
 
+    # ── Startup catch-up: fire any run missed during container restart ──────
+    import pytz
+    AZ  = pytz.timezone("US/Arizona")
+    now = datetime.now(AZ)
+
+    RUN_WINDOWS = {
+        "early":   (6,  30),
+        "main":    (8,  30),
+        "confirm": (9,  15),
+    }
+
+    state = load_state()
+
+    for run_name, (hour, minute) in RUN_WINDOWS.items():
+        scheduled     = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        minutes_past  = (now - scheduled).total_seconds() / 60
+
+        if 0 <= minutes_past <= 45:  # within 45-min window
+            already_ran = state.get(f"{run_name}_done_today") == str(now.date())
+            if not already_ran:
+                print(f"  [startup] Missed {run_name} run — firing now")
+                if run_name == "main":
+                    state = run_main(state, force_discord=True)
+                    state[f"{run_name}_done_today"] = str(now.date())
+                elif run_name == "early":
+                    state = run_early(state)
+                    state[f"{run_name}_done_today"] = str(now.date())
+                save_state(state)
+    # ────────────────────────────────────────────────────────────────────────
+
     while True:
         try:
             state = load_state()

@@ -324,32 +324,43 @@ def get_pitcher_bundle(player_name: str) -> dict:
 # ═════════════════════════════════════════
 
 def get_all_batter_stats() -> dict:
-    """Fetch all batter stats once and return as dict keyed by lowercase name."""
-    cache_key = f"all_batter_stats_{TODAY}"
-    cached = _cache_read(cache_key, max_age_hours=12)
+    from slipiq_cache import cache_get, cache_set
+    from datetime import date
+
+    cache_key = f"all_batter_stats_{date.today()}"
+    cached = cache_get(cache_key)
     if cached:
         return cached
+
     try:
         import pybaseball
         pybaseball.cache.enable()
-        data = pybaseball.batting_stats(CURRENT_YEAR, qual=50)
+        # Use batting_stats_bref — hits Baseball Reference, not FanGraphs
+        data = pybaseball.batting_stats_bref(date.today().year)
         if data is None or data.empty:
             return {}
+
         result = {}
         for _, row in data.iterrows():
             name = str(row.get("Name", "")).lower()
+            pa = float(row.get("PA", 1))
+            ab = float(row.get("AB", 1))
             result[name] = {
-                "avg":   float(row.get("AVG", 0.250)),
-                "obp":   float(row.get("OBP", 0.320)),
-                "slg":   float(row.get("SLG", 0.400)),
-                "hr":    int(row.get("HR", 0)),
-                "hits":  int(row.get("H", 0)),
-                "ab":    int(row.get("AB", 1)),
-                "k_pct": float(row.get("K%", 20.0)) / 100,
+                "avg":    float(row.get("BA", 0.250)),
+                "obp":    float(row.get("OBP", 0.320)),
+                "slg":    float(row.get("SLG", 0.400)),
+                "hr":     int(row.get("HR", 0)),
+                "hits":   int(row.get("H", 0)),
+                "ab":     int(ab),
+                "pa":     int(pa),
+                "k_pct":  float(row.get("SO", 0)) / pa if pa > 0 else 0.22,
+                "bb_pct": float(row.get("BB", 0)) / pa if pa > 0 else 0.08,
             }
-        _cache_write(cache_key, result)
-        print(f"  [batter_stats] Loaded {len(result)} batters")
+
+        cache_set(cache_key, result)
+        print(f"  [batter_stats] Loaded {len(result)} batters from Baseball Reference")
         return result
+
     except Exception as e:
         print(f"  [batter_stats] Error: {e}")
         return {}
