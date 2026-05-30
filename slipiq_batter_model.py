@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 import numpy as np
 
-from slipiq_mlb_data import get_batter_statcast, get_batter_recent_form
+from slipiq_mlb_data import get_batter_k_rates, get_batter_recent_form
 from slipiq_batter_lines import get_batter_lines, SPORT_MLB, PRIMARY_MARKETS
 from slipiq_grading import calc_grade
 

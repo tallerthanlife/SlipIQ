@@ -435,9 +435,14 @@ def _normalize_event_odds(
     if not bookmakers and isinstance(odds_raw.get("data"), list):
         bookmakers = odds_raw["data"]
 
+    books_found = [b.get("key") or b.get("name") for b in bookmakers]
+    print(f"  [propline] Books in response: {books_found}")
+
     for bm in bookmakers:
-        book       = (bm.get("key") or bm.get("book_key") or "").lower()
-        book_title = bm.get("title") or bm.get("name") or book.title()
+        bm_key      = (bm.get("key") or bm.get("book_key") or "").lower()
+        is_pinnacle = any(x in (bm_key or "").lower() for x in ("pinnacle",))
+        book        = "pinnacle" if is_pinnacle else bm_key
+        book_title  = bm.get("title") or bm.get("name") or book.title()
 
         for market in bm.get("markets") or []:
             market_key = (market.get("key") or market.get("market_key") or "").lower()

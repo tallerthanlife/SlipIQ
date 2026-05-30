@@ -35,7 +35,7 @@ CACHE_DIR = Path("cache")
 CACHE_DIR.mkdir(exist_ok=True)
 
 # ─── Gate thresholds ──────────────────────────────────────────
-CONFIDENCE_POST  = 65
+CONFIDENCE_POST  = 60
 CONFIDENCE_HOLD  = 50
 MIN_BOOKS_POST   = 1
 GRADE_POST       = {"A", "B+", "B"}
@@ -292,6 +292,12 @@ def gate_pick(card: dict) -> dict:
             and grade in GRADE_POST):
         card["gate"]        = "POST"
         card["gate_reason"] += f" | EV +{card.get('ev', 0)*100:.1f}% confirmed → POST"
+
+    # Also upgrade HOLD → POST if confidence is strong even without EV
+    if card["gate"] == "HOLD" and card.get("confidence", 0) >= 63:
+        if card.get("grade") in ("A", "B+", "B"):
+            card["gate"] = "POST"
+            card["gate_reason"] += " | High confidence — posted without EV"
 
     return card
 
