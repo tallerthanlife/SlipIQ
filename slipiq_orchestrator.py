@@ -260,14 +260,22 @@ def run_main(state: dict, force_discord: bool = True) -> dict:
 
         # Load today's game schedule from PropLine (free endpoint)
         try:
-            from slipiq_propline import fetch_events
+            from slipiq_propline import fetch_events, fetch_scores
+            # Try scores first (includes in-progress and recent games)
+            todays_scores = fetch_scores(sport="baseball_mlb", days_from=1)
+            # Also get upcoming events
             todays_events = fetch_events(sport="baseball_mlb")
-            if todays_events:
+            # Merge both lists, deduplicate by id
+            all_games = {g["id"]: g for g in (todays_scores + todays_events)}.values()
+            all_games = list(all_games)
+            if all_games:
                 from slipiq_cache import cache_set
-                cache_set("mlb_todays_games", todays_events)
-                print(f"  [slate] Loaded {len(todays_events)} MLB games from PropLine")
+                cache_set("mlb_todays_games", all_games)
+                print(f"  [slate] Loaded {len(all_games)} MLB games (scores+events)")
+            else:
+                print(f"  [slate] PropLine returned 0 games — fallback schedule active")
         except Exception as e:
-            print(f"  [slate] PropLine events failed: {e}")
+            print(f"  [slate] PropLine games failed: {e} — fallback active")
 
         # Alert Discord that a new slate window was detected
         try:

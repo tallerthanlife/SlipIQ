@@ -150,12 +150,51 @@ def avg_clv(record: dict) -> float:
 # RESULT FETCHER
 # ═════════════════════════════════════════
 
+def _extract_stat_from_propline(stats: dict, pick: dict) -> float | None:
+    """Extract the relevant stat from PropLine box score for this pick."""
+    player = pick.get("player", "").lower()
+    market = pick.get("market", "").lower()
+
+    players = stats.get("players", []) or stats.get("player_stats", [])
+    for p in players:
+        name = (p.get("name") or p.get("player", "")).lower()
+        if player in name or name in player:
+            if "strikeout" in market or "pitcher_k" in market:
+                return p.get("strikeouts") or p.get("pitcher_strikeouts")
+            elif "hit" in market:
+                return p.get("hits") or p.get("batter_hits")
+            elif "total_base" in market:
+                return p.get("total_bases")
+    return None
+
+
 def fetch_pitcher_actual_ks(player_name: str, game_date: str) -> int | None:
     """
     Fetch actual strikeout total for a pitcher on a given date.
-    Source: Statcast via pybaseball.
+    Source: PropLine box score (primary), Statcast via pybaseball (fallback).
     Returns K total or None if not found.
     """
+    # Try PropLine stats first (free, faster than pybaseball)
+    try:
+        from slipiq_propline import fetch_event_stats, fetch_scores
+        scores = fetch_scores(sport="baseball_mlb", days_from=2)
+        for game in scores:
+            home = game.get("home_team", "")
+            away = game.get("away_team", "")
+            pick = {"player": player_name, "market": "pitcher_strikeouts",
+                    "home_team": home, "away_team": away}
+            pick_team = pick.get("home_team", "") or pick.get("away_team", "")
+            if pick_team and (pick_team in home or pick_team in away):
+                event_id = game.get("id")
+                stats = fetch_event_stats(event_id, sport="baseball_mlb")
+                if stats:
+                    result = _extract_stat_from_propline(stats, pick)
+                    if result is not None:
+                        print(f"  [sharp] PropLine: {player_name} on {game_date}: {int(result)} Ks")
+                        return int(result)
+    except Exception as e:
+        print(f"  [sharp] PropLine stats failed: {e} — falling back to pybaseball")
+
     try:
         # Lookup MLBAM ID
         parts  = player_name.strip().split()

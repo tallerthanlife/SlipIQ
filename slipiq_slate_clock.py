@@ -295,6 +295,10 @@ class SlateClock:
 
         source = "parlayapi_cache" if games else "fallback"
 
+        if not games:
+            fallback_times = list(FALLBACK_TIMES.values())
+            print(f"  [slate] Fallback schedule times: {[str(t) for t in fallback_times]}")
+
         return {
             "morning":     self._window_info(morning_games,   "morning"),
             "afternoon":   self._window_info(afternoon_games, "afternoon"),

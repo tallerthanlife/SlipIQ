@@ -282,14 +282,13 @@ def _batter_on_team(batter_pick, team_name):
     """Check if batter plays for the given team"""
     try:
         from slipiq_player_ids import is_batter_on_team
-        result = is_batter_on_team(batter_pick.get("player", ""), team_name)
-        if result:
+        if is_batter_on_team(batter_pick.get("player", ""), team_name):
             return True
     except Exception:
         pass
-
     # Fallback: string matching
-    batter_team = batter_pick.get("team", "") or batter_pick.get("home_team", "")
+    batter_team = (batter_pick.get("team") or
+                   batter_pick.get("home_team") or "")
     if not batter_team or not team_name:
         return False
     team_words = [w for w in team_name.lower().split() if len(w) > 3]
@@ -383,11 +382,12 @@ def build_ml_parlays(pitcher_picks, game_lines, batter_picks=None):
     PITCHER_K_MARKETS = {
         "player_strikeouts",
         "player_pitcher_strikeouts",
+        "pitcher_strikeouts",
         "player_strike_outs",
     }
     k_picks = [
         p for p in pitcher_picks
-        if (p.get("market") or p.get("market_key") or "") in PITCHER_K_MARKETS
+        if (p.get("market") or p.get("market_key") or "").lower() in PITCHER_K_MARKETS
         and p.get("grade") in ("A+", "A", "B+", "B")
     ]
 

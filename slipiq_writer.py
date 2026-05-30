@@ -62,6 +62,8 @@ def call_groq(prompt: str, max_tokens: int = 300) -> str:
     Call Groq API with llama-3.3-70b-versatile.
     Returns generated text or error string.
     """
+    if not os.getenv("GROQ_API_KEY"):
+        return ""
     try:
         import requests
         headers = {
