@@ -246,14 +246,15 @@ def gate_pick(card: dict) -> dict:
     bookmakers = (
         card.get("bookmakers") or
         card.get("_entries") or
-        card.get("_raw_event_odds", {}).get("bookmakers") or
+        card.get("_raw_bookmakers") or
         []
     )
-    if bookmakers:
-        books = [b.get("key") or b.get("name") for b in bookmakers]
-        print(f"  [ev] {card.get('player')} books available: {books}")
+
+    if not bookmakers:
+        print(f"  [ev] {card.get('player')} — no bookmakers on card, skipping EV")
     else:
-        print(f"  [ev] {card.get('player')} NO bookmakers on card")
+        books = [b.get("key") or b.get("name", "?") for b in bookmakers[:3]]
+        print(f"  [ev] {card.get('player')} — books: {books}")
     sharp_line = get_sharpest_line(bookmakers, card.get("market", "pitcher_strikeouts"))
 
     if sharp_line and sharp_line.get("over_odds") and sharp_line.get("under_odds"):

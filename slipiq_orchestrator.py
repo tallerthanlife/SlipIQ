@@ -337,42 +337,19 @@ def run_main(state: dict, force_discord: bool = True) -> dict:
                   f"PP:{stats.get('pp_queue',0)} | "
                   f"Lotto:{stats.get('lotto',0)}")
 
-        # Run batter model and post batter picks
-        try:
-            from slipiq_batter_model import run_batter_model
-            print("  [2b] Running batter model...")
-            batter_picks = run_batter_model(min_confidence=60)
-            print(f"  [2b] Batter model: {len(batter_picks)} picks")
-        except Exception as e:
-            import traceback
-            print(f"  [2b] Batter model error: {e}")
-            print(traceback.format_exc())
-            batter_picks = []
-
         # ── [3] Correlated SGP parlays ────────────────────────
         print("\n  [3] Building correlated SGP parlays...")
         try:
             from slipiq_env import CHANNEL_TEAM_PARLAY
             from slipiq_discord import post_message
 
-            # Pull picks from curation result or run models directly
+            # Use picks already produced by curation — no second model run
             sgp_pool = routing.get("sgp_pool", []) if routing else []
 
             if sgp_pool:
                 from slipiq_ml_parlay import build_ml_parlays
-                from slipiq_batter_lines import run_batter_analysis
-
-                # FIXED: run_all_models not run_pitcher_model
-                try:
-                    from slipiq_pitcher_model import run_all_models
-                    pitcher_picks = run_all_models(min_confidence=60)
-                except (ImportError, TypeError):
-                    pitcher_picks = sgp_pool  # use curated pool as fallback
-
-                batter_picks  = run_batter_analysis(min_confidence=55)
                 game_lines_list = list(f5_lines.values()) if f5_lines else []
-
-                ml_parlays = build_ml_parlays(pitcher_picks, game_lines_list, batter_picks)
+                ml_parlays = build_ml_parlays(sgp_pool, game_lines_list, [])
 
                 if ml_parlays and force_discord and CHANNEL_TEAM_PARLAY:
                     _post_sgp_slips(ml_parlays, CHANNEL_TEAM_PARLAY, post_message)
@@ -452,8 +429,9 @@ def run_main(state: dict, force_discord: bool = True) -> dict:
             _start_pp_scanner()
 
         # ── [7] State update ──────────────────────────────────
-        state["main_done"]    = True
-        state["picks_posted"] = picks_posted
+        state["main_done"]      = True
+        state["main_done_date"] = datetime.now().strftime("%Y-%m-%d")
+        state["picks_posted"]   = picks_posted
         print(f"\n  ✅ Main run complete — {picks_posted} picks + slips posted")
 
     except Exception as e:
@@ -834,34 +812,35 @@ def run_scheduler() -> None:
     if not NBA_SEASON_ACTIVE:
         print("  ⚠️  NBA jobs disabled — NBA_SEASON_ACTIVE=false in .env\n")
 
-    # ── Startup catch-up: fire any run missed during container restart ──────
+    # ── Startup catch-up: fire missed runs on container restart ─────────────
     import pytz
-    AZ  = pytz.timezone("US/Arizona")
-    now = datetime.now(AZ)
-
-    RUN_WINDOWS = {
-        "early":   (6,  30),
-        "main":    (8,  30),
-        "confirm": (9,  15),
-    }
+    AZ    = pytz.timezone("US/Arizona")
+    now   = datetime.now(AZ)
+    today = str(now.date())
 
     state = load_state()
 
-    for run_name, (hour, minute) in RUN_WINDOWS.items():
-        scheduled     = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        minutes_past  = (now - scheduled).total_seconds() / 60
+    # If we start between 8:30-9:15 AZ and main hasn't run today, fire it
+    main_window_start = now.replace(hour=8, minute=30, second=0, microsecond=0)
+    main_window_end   = now.replace(hour=9,  minute=15, second=0, microsecond=0)
 
-        if 0 <= minutes_past <= 45:  # within 45-min window
-            already_ran = state.get(f"{run_name}_done_today") == str(now.date())
-            if not already_ran:
-                print(f"  [startup] Missed {run_name} run — firing now")
-                if run_name == "main":
-                    state = run_main(state, force_discord=True)
-                    state[f"{run_name}_done_today"] = str(now.date())
-                elif run_name == "early":
-                    state = run_early(state)
-                    state[f"{run_name}_done_today"] = str(now.date())
-                save_state(state)
+    if main_window_start <= now <= main_window_end:
+        if state.get("main_done_date") != today:
+            print(f"  [startup] Within main run window — firing main run now")
+            state = run_main(state, force_discord=True)
+            state["main_done_date"] = today
+            save_state(state)
+
+    # If we start between 6:30-7:30 AZ and early hasn't run today, fire it
+    early_window_start = now.replace(hour=6, minute=30, second=0, microsecond=0)
+    early_window_end   = now.replace(hour=7, minute=30, second=0, microsecond=0)
+
+    if early_window_start <= now <= early_window_end:
+        if state.get("early_done_date") != today:
+            print(f"  [startup] Within early run window — firing early run now")
+            state = run_early(state)
+            state["early_done_date"] = today
+            save_state(state)
     # ────────────────────────────────────────────────────────────────────────
 
     while True:

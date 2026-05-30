@@ -500,6 +500,7 @@ def _normalize_event_odds(
                     "game_id":          event_id,
                     "_source":          "propline",
                     "bookmakers":       bookmakers,
+                    "_event_id":        event_id,
                     "_raw_event_odds":  odds_raw,
                 })
 

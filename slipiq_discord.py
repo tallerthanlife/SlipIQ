@@ -717,14 +717,53 @@ def run_discord_post(slate: dict = None) -> bool:
     if not slate:
         slate_path = CACHE_DIR / "agent_slate.json"
         if not slate_path.exists():
-            print("  [discord] No slate cache found — run confidence agent first")
+            print("  [discord] No slate cache found")
             return False
         with open(slate_path) as f:
             slate = json.load(f)
 
-    post_count = slate.get("post_count", 0)
+    post_list  = slate.get("post_list", [])
+    post_count = len(post_list)
     print(f"\n  [discord] Posting slate: {post_count} picks to #daily-picks")
-    return post_morning_brief(slate)
+
+    # 1. Morning brief summary card
+    post_morning_brief(slate)
+
+    # 2. Individual pick card for every pick (not just best pick)
+    MARKET_LABELS = {
+        "pitcher_strikeouts":   "Strikeouts",
+        "pitcher_outs":         "Pitcher Outs",
+        "pitcher_hits_allowed": "Hits Allowed",
+        "pitcher_earned_runs":  "Earned Runs",
+        "batter_hits":          "Hits",
+        "batter_total_bases":   "Total Bases",
+        "batter_home_runs":     "Home Runs",
+        "batter_rbis":          "RBIs",
+    }
+    posted = 0
+    for i, pick in enumerate(post_list):
+        try:
+            embed = build_best_pick_embed(pick)
+            market       = pick.get("market", "pitcher_strikeouts")
+            market_label = MARKET_LABELS.get(market, market.replace("_", " ").title())
+            embed["title"] = (
+                f"⚾ SlipIQ Pick — {pick.get('player')} {market_label}"
+            )
+            if i == 0:
+                embed["description"] = "Best pick of the day"
+
+            success = post_message(DISCORD_DAILY_PICKS_CHANNEL, embed=embed)
+            if success:
+                posted += 1
+                print(f"  [discord] Posted {pick.get('player')} ({posted}/{post_count})")
+            time.sleep(1.5)
+        except Exception as e:
+            import traceback
+            print(f"  [discord] ERROR on {pick.get('player', '?')}: {e}")
+            print(traceback.format_exc())
+
+    print(f"  [discord] {posted}/{post_count} picks posted")
+    return posted > 0
 
 
 def post_prizepicks_entry(entry: dict) -> bool:
