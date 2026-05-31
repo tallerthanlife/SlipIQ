@@ -230,8 +230,8 @@ def route_picks(top_picks: list[dict]) -> dict:
 # ═══════════════════════════════════════════════════════════════
 
 def run_curation(
-    sport_key:  str = SPORT_MLB,
     post_discord: bool = True,
+    sport_key:  str = SPORT_MLB,
 ) -> dict:
     """
     Full morning curation pipeline.
