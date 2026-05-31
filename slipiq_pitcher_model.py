@@ -982,7 +982,13 @@ def run_pitcher_model(sport_key: str = SPORT_MLB) -> list[dict]:
     # Extra markets — pitcher_outs, pitcher_hits_allowed, pitcher_earned_runs
     extra_cards: list[dict] = []
     for extra_mkt in ("pitcher_outs", "pitcher_hits_allowed", "pitcher_earned_runs"):
-        extra_raw = all_props.get(extra_mkt) or []
+        if isinstance(props, dict):
+            extra_raw = props.get(extra_mkt) or []
+        else:
+            extra_raw = [
+                p for p in props
+                if (p.get("market_key") or p.get("market") or "") == extra_mkt
+            ]
         if not extra_raw:
             continue
         extra_agg = aggregate_by_player(extra_raw)
