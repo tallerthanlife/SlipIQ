@@ -733,7 +733,15 @@ def aggregate_by_player(props: list[dict]) -> dict:
     """
     grouped = defaultdict(list)
     for p in props:
-        grouped[(p["player"], p["market_key"])].append(p)
+        market = (
+            p.get("market_key")
+            or p.get("market")
+            or p.get("prop")
+            or "unknown_market"
+        )
+        if isinstance(market, str):
+            market = market.lower()
+        grouped[(p.get("player", ""), market)].append(p)
 
     result = {}
     for (player, market), entries in grouped.items():
